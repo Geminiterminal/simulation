@@ -229,8 +229,9 @@ public class DriveSubsystem extends SubsystemBase {
     try{
       config = RobotConfig.fromGUISettings();
     } catch (Exception e) {
-      // Handle exception as needed
-      e.printStackTrace();
+      DriverStation.reportError(
+          "PathPlanner configuration failed. Check deploy/pathplanner/settings.json: " + e,
+          e.getStackTrace());
     }
 
     m_oldLeftCameraEstimator = new PhotonPoseEstimator(
@@ -300,7 +301,6 @@ public class DriveSubsystem extends SubsystemBase {
     m_headingPID.setTolerance(kHeadingToleranceDeg);
   }
 
-  private double m_lastPrintTime = 0.0;
 
   @Override
   public void periodic() {
@@ -333,10 +333,6 @@ public class DriveSubsystem extends SubsystemBase {
     m_visionActive = (m_lastVisionFuseTime >= 0.0)
                    && ((now - m_lastVisionFuseTime) < 0.25);  // 250 ms window
 
-    if (now - m_lastPrintTime > 1.0) {  // print once per second
-      System.out.println("Current pose estimate:" + getPose());
-      m_lastPrintTime = now;
-    }
 
     // Pose data
     SmartDashboard.putNumber("Robot X (m)", getPose().getX());

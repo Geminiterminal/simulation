@@ -138,13 +138,9 @@ public class RobotContainer {
     NamedCommands.registerCommand("ShootForXseconds", new AutoAimAndShoot(m_robotDrive, shooter, intake, 20.0));
 
         autoChooser.setDefaultOption("Do Nothing", "NONE");
-        autoChooser.addOption("1st Try Kawser", "1st Try Kawser");
-        autoChooser.addOption("Autov1", "Autov1");
-        autoChooser.addOption("right auto", "right auto");
         autoChooser.addOption("2m and turn", "2m and turn");
         autoChooser.addOption("Blue left", "Blue left");
-        autoChooser.addOption("Blue right", "Blue right");
-        autoChooser.addOption("New Auto", "New Auto");
+        autoChooser.addOption("Blue right", "blue right");
         SmartDashboard.putData("Auto Chooser", autoChooser);
     }
 
@@ -369,58 +365,43 @@ public class RobotContainer {
 
 
     private Command driveToRightTrench() {
-    PathConstraints constraints = new PathConstraints(
-        2.0,
-        2.0,
-        Units.degreesToRadians(360),
-        Units.degreesToRadians(540)
-    );
-
-    try {
-        // 1. ALWAYS load the path authored on the Blue side.
-        // PathPlanner will automatically flip it for you if you are on Red.
-        PathPlannerPath path =
-            PathPlannerPath.fromPathFile("blue right trench");
-
-        // 2. Use pathfindThenFollowPath!
-        // This automatically handles flipping the pathfinding destination AND the path itself.
-        return AutoBuilder.pathfindThenFollowPath(path, constraints);
-
-    } catch (Exception e) {
-        DriverStation.reportError(
-            "Unable to load path: blue right trench",
-            e.getStackTrace());
-
-        return Commands.none();
+        return Commands.defer(() -> loadTrenchPath("blue right trench"), java.util.Set.of(m_robotDrive));
     }
-}
 
-private Command driveToLeftTrench() {
-    PathConstraints constraints = new PathConstraints(
-        2.0,
-        2.0,
-        Units.degreesToRadians(360),
-        Units.degreesToRadians(540)
-    );
-
-    try {
-        // 1. ALWAYS load the path authored on the Blue side.
-        // PathPlanner will automatically flip it for you if you are on Red.
-        PathPlannerPath path =
-            PathPlannerPath.fromPathFile("blue left trench");
-
-        // 2. Use pathfindThenFollowPath!
-        // This automatically handles flipping the pathfinding destination AND the path itself.
-        return AutoBuilder.pathfindThenFollowPath(path, constraints);
-
-    } catch (Exception e) {
-        DriverStation.reportError(
-            "Unable to load path: blue left trench",
-            e.getStackTrace());
-
-        return Commands.none();
+    private Command driveToLeftTrench() {
+        return Commands.defer(() -> loadTrenchPath("blue left trench"), java.util.Set.of(m_robotDrive));
     }
-}
+
+    private Command loadTrenchPath(String pathName) {
+        if (!AutoBuilder.isConfigured()) {
+            DriverStation.reportError("Cannot follow path: AutoBuilder is not configured.", false);
+            return Commands.none();
+        }
+        PathConstraints constraints = new PathConstraints(
+            2.0,
+            2.0,
+            Units.degreesToRadians(360),
+            Units.degreesToRadians(540)
+        );
+
+        try {
+            // 1. ALWAYS load the path authored on the Blue side.
+            // PathPlanner will automatically flip it for you if you are on Red.
+            PathPlannerPath path =
+                PathPlannerPath.fromPathFile(pathName);
+
+            // 2. Use pathfindThenFollowPath!
+            // This automatically handles flipping the pathfinding destination AND the path itself.
+            return AutoBuilder.pathfindThenFollowPath(path, constraints);
+
+        } catch (Exception e) {
+            DriverStation.reportError(
+                "Unable to load path: " + pathName + ": " + e,
+                e.getStackTrace());
+
+            return Commands.none();
+        }
+    }
 
     private DriverControlsProfile getActiveProfile(DriverProfile profile) {
         DriverProfile selected = profile == null ? DriverProfile.THRUSTMASTER : profile;
@@ -447,6 +428,18 @@ private Command driveToLeftTrench() {
         if (selected == null || "NONE".equals(selected)) {
             return Commands.none();
         }
-        return new PathPlannerAuto(selected);
+        if (!AutoBuilder.isConfigured()) {
+            DriverStation.reportError(
+                "Cannot run autonomous: AutoBuilder is not configured. Check deploy/pathplanner/settings.json.",
+                false);
+            return Commands.none();
+        }
+        try {
+            return new PathPlannerAuto(selected);
+        } catch (Exception e) {
+            DriverStation.reportError("Unable to load autonomous '" + selected + "': " + e,
+                e.getStackTrace());
+            return Commands.none();
+        }
     }
 }

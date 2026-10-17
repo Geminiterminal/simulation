@@ -76,9 +76,14 @@ public class VisionSubsystem extends SubsystemBase {
 
     m_backCameraSim.setMaxSightRange(VisionConstants.kSimCameraMaxSightRangeMeters);
     m_sideCameraSim.setMaxSightRange(VisionConstants.kSimCameraMaxSightRangeMeters);
-    // Draws the camera FOV / detected tags on the debug field widget.
-    m_backCameraSim.enableDrawWireframe(true);
-    m_sideCameraSim.enableDrawWireframe(true);
+    // Image rendering is expensive and unnecessary for pose fusion. These flags
+    // disable video only; synthetic detections and the debug field remain active.
+    m_backCameraSim.enableRawStream(false);
+    m_backCameraSim.enableProcessedStream(false);
+    m_backCameraSim.enableDrawWireframe(false);
+    m_sideCameraSim.enableRawStream(false);
+    m_sideCameraSim.enableProcessedStream(false);
+    m_sideCameraSim.enableDrawWireframe(false);
 
     m_visionSystemSim.addCamera(m_backCameraSim, VisionConstants.kRobotToBackCamera);
     m_visionSystemSim.addCamera(m_sideCameraSim, VisionConstants.kRobotToSideCamera);
