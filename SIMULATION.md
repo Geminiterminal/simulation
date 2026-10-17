@@ -43,6 +43,47 @@ What you should see:
 Driver controls: you can map a real Xbox controller / Thrustmaster in the sim
 GUI’s Joysticks tab, or drag keyboard joysticks.
 
+## Switching alliances in the simulation
+
+The alliance can be changed at any time while the sim is running, so a
+red-alliance match can be rehearsed without touching the code or re-authoring
+any paths.
+
+Two ways to do it:
+
+| Control | Where |
+|---------|-------|
+| `Alliance` chooser | Glass (or any dashboard that renders `SendableChooser`s) - simulation only |
+| Toggle button | Thrustmaster **button 12**, Xbox **Y** button - simulation only |
+
+`Alliance Status` on the dashboard always shows the alliance the robot is
+currently on. The button is the quickest way to flip sides mid-session; the
+chooser is an explicit alternative for when you are driving from the dashboard
+rather than from the controller.
+
+What changes when the alliance switches:
+
+- **Paths**: PathPlanner flips every blue-authored path for the red alliance
+  (the origin stays on the blue side), so the same `.auto` file runs on both
+  sides.
+- **The robot is moved** to the matching spot on the other side of the field.
+  The 2026 field is rotationally symmetric, so the robot is rotated 180°
+  about the field center: `x → 16.54 − x`, `y → 8.07 − y`, `heading → heading
+  − 180°`. This is exactly the transform PathPlanner uses when it flips a
+  path, so the robot lands where the flipped path starts. Set
+  `Mirror Robot On Alliance Change` to `false` on the dashboard to keep the
+  robot where it is and only switch the alliance logic.
+- **The heading** is re-seeded to the alliance default (180° on blue, 0° on
+  red, i.e. facing your own alliance wall) and vision re-establishes the
+  heading from the new spot on the field.
+- **The hub** follows the alliance, so auto-aim and the auto-distance
+  controller shoot at the right hub.
+
+The simulated driver station is kept in sync with the robot, so
+`DriverStation.getAlliance()` reports the same alliance the robot code is
+using. On the real robot the alliance comes from the FMS and cannot be
+changed - the toggle and the chooser are simulation-only.
+
 ## Calibration data
 
 All physics constants live in `Constants.SimulationConstants`; camera metadata
@@ -110,3 +151,26 @@ calibration the tests flag it.
 - **Arm hangs instead of stowing**: expected — with no command the MAXMotion
   loop is idle and gravity wins, same as hardware in brake-less conditions.
   Schedule a stow on robot boot if you want it held.
+
+## Startup errors and loop overruns
+
+- PathPlanner assets must live in `src/main/deploy/pathplanner` (two n's),
+  including `settings.json`, `autos/*.auto`, and `paths/*.path`. File names
+  are case-sensitive on Linux. The chooser lists only the three bundled autos;
+  failed configuration or auto loading reports an error and returns no command.
+- `blue right trench.path` is not bundled. The right-trench binding reports an
+  error and does nothing when requested until that route is authored/exported
+  from PathPlanner. Do not substitute a different route without checking it.
+- Joystick axis/button/POV warnings mean the selected control profile is reading
+  inputs absent from DS port 0. Map a controller (or a suitably configured
+  simulated joystick) to that port and select the matching driver profile.
+  They are separate from the PathPlanner startup failure.
+- Camera raw/processed video and wireframe rendering are disabled to reduce
+  desktop CPU load; synthetic AprilTag measurements and the debug field remain
+  enabled. Pose telemetry remains on SmartDashboard instead of printing every
+  second. The 20 ms loop deadline and overrun diagnostics remain unchanged.
+  If overruns persist after warmup, run without the Java debugger and profile
+  the simulation before changing physics or camera update rates.
+- Check deploy asset names/references without WPILib using
+  `python3 -m unittest discover -s tests`. Run `./gradlew test` in a WPILib Java
+  environment for the Java/physics tests.

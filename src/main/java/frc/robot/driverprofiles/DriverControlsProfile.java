@@ -23,7 +23,13 @@ public interface DriverControlsProfile {
     Trigger thruRightTrench();
     Trigger thruLeftTrench();
     Trigger startShotCycle();
-    
+
     // NEW: Dynamic trigger for snapping odometry to vision targets
     Trigger forceReseedTrigger();
+
+    /**
+     * Switches between the red and blue alliance. Simulation only - on the real
+     * robot the alliance comes from the FMS.
+     */
+    Trigger toggleAllianceTrigger();
 }

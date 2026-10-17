@@ -28,6 +28,7 @@ import com.studica.frc.AHRS;
 import com.studica.frc.AHRS.NavXComType;
 
 import frc.robot.Constants.DriveConstants;
+import frc.robot.Constants.FieldConstants;
 import frc.robot.Constants.SimulationConstants;
 import frc.robot.Constants.VisionConstants;
 import frc.robot.driverprofiles.ThrustmasterProfile;
@@ -88,6 +89,11 @@ public class DriveSubsystem extends SubsystemBase {
   private boolean m_hasVisionHeading = false;
   private DriverStation.Alliance m_startupAlliance = DriverStation.Alliance.Blue;
 
+  // The alliance the robot is competing on (FMS on the real robot, switchable
+  // in simulation). Owned by the alliance subsystem so that every consumer -
+  // hub location, path mirroring, heading defaults - sees the same value.
+  private final AllianceSubsystem m_allianceSubsystem;
+
   // Driver motion is always field-relative. This source records how the field
   // heading was most recently established or corrected.
   private String m_fieldHeadingSource = "STARTUP ALLIANCE DEFAULT";
@@ -102,15 +108,23 @@ public class DriveSubsystem extends SubsystemBase {
   
   // NEW: Dynamically grabs the Hub location based on our current Alliance!
   public Translation2d getHubLocation() {
-      var alliance = DriverStation.getAlliance();
-      
+      return getHubLocation(m_allianceSubsystem.getAlliance());
+  }
+
+  /**
+   * Returns the hub center for the given alliance.
+   *
+   * @param alliance the alliance the robot is on
+   * @return the center of that alliance's hub
+   */
+  static Translation2d getHubLocation(DriverStation.Alliance alliance) {
       // If we are on the Red Alliance, return the Red coordinates (From your PathPlanner screenshot)
-      if (alliance.isPresent() && alliance.get() == DriverStation.Alliance.Red) {
-          return new Translation2d(11.919, 4.029);
+      if (alliance == DriverStation.Alliance.Red) {
+          return new Translation2d(FieldConstants.kRedHubX, FieldConstants.kRedHubY);
       }
-      
+
       // Default to your original Blue coordinates
-      return new Translation2d(4.626, 4.035);
+      return new Translation2d(FieldConstants.kBlueHubX, FieldConstants.kBlueHubY);
   }
 
   // Pose estimator (odometry + vision fusion) -----------------------------------------------------------------
@@ -218,19 +232,26 @@ public class DriveSubsystem extends SubsystemBase {
   }
 
   /** Constructor - Creates a new DriveSubsystem. */
-  public DriveSubsystem(VisionSubsystem visionSystem) {
+  public DriveSubsystem(VisionSubsystem visionSystem, AllianceSubsystem allianceSubsystem) {
     // Usage reporting for MAXSwerve template
     HAL.report(tResourceType.kResourceType_RobotDrive, tInstances.kRobotDriveSwerve_MaxSwerve);
     SmartDashboard.putNumber(PATHPLANNER_COMMANDED_OMEGA_KEY, 0.0);
-    
+
+    m_allianceSubsystem = allianceSubsystem;
+    m_startupAlliance = m_allianceSubsystem.getAlliance();
+    // Move to the other side of the field when the alliance changes in
+    // simulation, exactly like PathPlanner flips a blue-authored path.
+    m_allianceSubsystem.addAllianceChangedListener(this::onAllianceChanged);
+
     // Load the RobotConfig from the GUI settings. You should probably
     // store this in your Constants file
     RobotConfig config = null;
     try{
       config = RobotConfig.fromGUISettings();
     } catch (Exception e) {
-      // Handle exception as needed
-      e.printStackTrace();
+      DriverStation.reportError(
+          "PathPlanner configuration failed. Check deploy/pathplanner/settings.json: " + e,
+          e.getStackTrace());
     }
 
     m_oldLeftCameraEstimator = new PhotonPoseEstimator(
@@ -270,11 +291,7 @@ public class DriveSubsystem extends SubsystemBase {
               // This will flip the path being followed to the red side of the field.
               // THE ORIGIN WILL REMAIN ON THE BLUE SIDE
 
-              var alliance = DriverStation.getAlliance();
-              if (alliance.isPresent()) {
-                return alliance.get() == DriverStation.Alliance.Red;
-              }
-              return false;
+              return m_allianceSubsystem.isRed();
             },
             this // Reference to this subsystem to set requirements
     );
@@ -300,20 +317,18 @@ public class DriveSubsystem extends SubsystemBase {
     m_headingPID.setTolerance(kHeadingToleranceDeg);
   }
 
-  private double m_lastPrintTime = 0.0;
 
   @Override
   public void periodic() {
     // Driver Station alliance data may arrive after robotInit. Until vision has
     // established heading, correct the startup default when that data arrives.
-    DriverStation.getAlliance().ifPresent(alliance -> {
-      if (!m_hasVisionHeading && alliance != m_startupAlliance) {
-        m_startupAlliance = alliance;
-        resetOdometryFromKnownFieldPose(
-            new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading(alliance)),
-            "STARTUP ALLIANCE DEFAULT");
-      }
-    });
+    DriverStation.Alliance alliance = m_allianceSubsystem.getAlliance();
+    if (!m_hasVisionHeading && alliance != m_startupAlliance) {
+      m_startupAlliance = alliance;
+      resetOdometryFromKnownFieldPose(
+          new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading(alliance)),
+          "STARTUP ALLIANCE DEFAULT");
+    }
 
     // 1. Update pose estimator with gyro + modules
     m_poseEstimator.update(
@@ -333,10 +348,6 @@ public class DriveSubsystem extends SubsystemBase {
     m_visionActive = (m_lastVisionFuseTime >= 0.0)
                    && ((now - m_lastVisionFuseTime) < 0.25);  // 250 ms window
 
-    if (now - m_lastPrintTime > 1.0) {  // print once per second
-      System.out.println("Current pose estimate:" + getPose());
-      m_lastPrintTime = now;
-    }
 
     // Pose data
     SmartDashboard.putNumber("Robot X (m)", getPose().getX());
@@ -419,8 +430,59 @@ public class DriveSubsystem extends SubsystemBase {
   }
 
   private Rotation2d getAllianceDefaultHeading() {
-    m_startupAlliance = DriverStation.getAlliance().orElse(DriverStation.Alliance.Blue);
+    m_startupAlliance = m_allianceSubsystem.getAlliance();
     return getAllianceDefaultHeading(m_startupAlliance);
+  }
+
+  /**
+   * Mirrors a field pose to the other side of the field.
+   *
+   * <p>The 2026 field is rotationally symmetric, so the red half is the blue
+   * half rotated 180 degrees about the field center. This is the same
+   * transform PathPlanner applies when it flips a blue-authored path for the
+   * red alliance, which keeps a mirrored robot and a flipped path in the same
+   * place.
+   *
+   * @param pose the pose to mirror
+   * @return the mirrored pose
+   */
+  static Pose2d mirrorPoseAcrossField(Pose2d pose) {
+    return new Pose2d(
+        new Translation2d(
+            FieldConstants.kFieldLengthMeters - pose.getX(),
+            FieldConstants.kFieldWidthMeters - pose.getY()),
+        pose.getRotation().minus(Rotation2d.kPi));
+  }
+
+  /**
+   * Called when the alliance changes (simulation only). The robot is moved to
+   * the matching spot on the other side of the field and the heading is
+   * re-seeded from the new alliance, so an auto authored on the blue side can
+   * be tested on the red side without re-authoring anything.
+   *
+   * @param alliance the new alliance
+   */
+  private void onAllianceChanged(DriverStation.Alliance alliance) {
+    m_startupAlliance = alliance;
+
+    if (m_isSim && m_allianceSubsystem.shouldMirrorRobot()) {
+      // Move the ground truth to the mirrored spot ...
+      Pose2d mirrored = mirrorPoseAcrossField(m_simRobotPose);
+      // ... and point the robot at the alliance wall, like the startup default.
+      m_simRobotPose = new Pose2d(
+          mirrored.getTranslation(), getAllianceDefaultHeading(alliance));
+      resetOdometryFromKnownFieldPose(
+          m_simRobotPose,
+          "ALLIANCE CHANGED: " + alliance.name());
+      // Let vision re-establish the heading from the new spot on the field.
+      m_hasVisionHeading = false;
+    } else if (!m_hasVisionHeading) {
+      resetOdometryFromKnownFieldPose(
+          new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading(alliance)),
+          "STARTUP ALLIANCE DEFAULT");
+    }
+
+    System.out.println("Alliance changed to " + alliance.name() + ", pose: " + getPose());
   }
 
   /**
