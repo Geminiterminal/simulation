@@ -105,6 +105,31 @@ public final class Constants {
   }
 
   /**
+   * Geometry of the 2026 "Rebuilt" field, in the WPILib field coordinate
+   * system (origin on the blue alliance wall, +x toward the red alliance wall).
+   *
+   * <p>The field is rotationally symmetric: the red half of the field is the
+   * blue half rotated 180 degrees about the field center. That is the same
+   * transform PathPlanner uses when it flips a blue-authored path for the red
+   * alliance, so a mirrored pose and a flipped path always agree.
+   */
+  public static final class FieldConstants {
+    /** Field length (blue wall to red wall). Matches PathPlanner's default. */
+    public static final double kFieldLengthMeters = 16.54;
+
+    /** Field width (one long side to the other). Matches PathPlanner's default. */
+    public static final double kFieldWidthMeters = 8.07;
+
+    /** Center of the blue alliance hub. */
+    public static final double kBlueHubX = 4.626;
+    public static final double kBlueHubY = 4.035;
+
+    /** Center of the red alliance hub. */
+    public static final double kRedHubX = 11.919;
+    public static final double kRedHubY = 4.029;
+  }
+
+  /**
    * Vision hardware metadata shared by the real robot code (DriveSubsystem) and
    * the PhotonVision simulation (VisionSubsystem). Keeping the camera names and
    * robot-to-camera transforms in one place guarantees the simulated cameras see

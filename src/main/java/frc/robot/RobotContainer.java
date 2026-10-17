@@ -14,6 +14,7 @@ import edu.wpi.first.wpilibj2.command.StartEndCommand;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.util.Units;
 import edu.wpi.first.wpilibj.Joystick;
+import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
 
@@ -22,6 +23,7 @@ import com.pathplanner.lib.auto.NamedCommands;
 import com.pathplanner.lib.commands.PathPlannerAuto;
 
 import frc.robot.subsystems.DriveSubsystem;
+import frc.robot.subsystems.AllianceSubsystem;
 import frc.robot.subsystems.Intake;
 import frc.robot.subsystems.Shooter;
 import frc.robot.subsystems.VisionSubsystem;
@@ -64,7 +66,8 @@ public class RobotContainer {
     }
 
     private final VisionSubsystem visionSystem = new VisionSubsystem();
-    private final DriveSubsystem m_robotDrive = new DriveSubsystem(visionSystem);
+    private final AllianceSubsystem allianceSubsystem = new AllianceSubsystem();
+    private final DriveSubsystem m_robotDrive = new DriveSubsystem(visionSystem, allianceSubsystem);
     private final Shooter shooter = Shooter.getInstance();
     private final Intake intake = Intake.getInstance();
 
@@ -190,6 +193,16 @@ public class RobotContainer {
     }
 
     private void configureBindings() {
+        // ALLIANCE (simulation only): switch between the red and blue alliance.
+        // Paths authored on the blue side are flipped for the red alliance, and
+        // the robot is moved to the matching spot on the other side of the
+        // field, so a red-alliance match can be rehearsed from the sim.
+        if (RobotBase.isSimulation()) {
+            activeProfileTrigger(DriverControlsProfile::toggleAllianceTrigger).onTrue(
+                new InstantCommand(allianceSubsystem::toggleAlliance, allianceSubsystem)
+            );
+        }
+
         // Manual full-pose correction from vision, including field heading.
         activeProfileTrigger(DriverControlsProfile::forceReseedTrigger).onTrue(
             new InstantCommand(m_robotDrive::correctTranslationFromVision, m_robotDrive)

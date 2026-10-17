@@ -48,6 +48,8 @@ public class XboxHanifStyleProfile implements DriverControlsProfile {
     
     // Xbox Start requests a vision pose correction.
     @Override public Trigger forceReseedTrigger() { return controller.start(); }
+    // Simulation helper: switch between the red and blue alliance.
+    @Override public Trigger toggleAllianceTrigger() { return controller.y(); }
 @Override
 public Trigger thruRightTrench() {
     return new Trigger(() -> false);

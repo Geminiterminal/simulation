@@ -4,9 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj.DriverStation;
 import frc.robot.Constants.DriveConstants;
+import frc.robot.Constants.FieldConstants;
 import org.junit.jupiter.api.Test;
 
 class DriveSubsystemTest {
@@ -77,6 +79,63 @@ class DriveSubsystemTest {
     assertEquals(0.0,
         DriveSubsystem.getAllianceDefaultHeading(DriverStation.Alliance.Red).getDegrees(),
         EPSILON);
+  }
+
+  @Test
+  void hubLocationFollowsTheAlliance() {
+    assertEquals(FieldConstants.kBlueHubX,
+        DriveSubsystem.getHubLocation(DriverStation.Alliance.Blue).getX(), EPSILON);
+    assertEquals(FieldConstants.kBlueHubY,
+        DriveSubsystem.getHubLocation(DriverStation.Alliance.Blue).getY(), EPSILON);
+    assertEquals(FieldConstants.kRedHubX,
+        DriveSubsystem.getHubLocation(DriverStation.Alliance.Red).getX(), EPSILON);
+    assertEquals(FieldConstants.kRedHubY,
+        DriveSubsystem.getHubLocation(DriverStation.Alliance.Red).getY(), EPSILON);
+  }
+
+  @Test
+  void redHubIsTheBlueHubRotatedAboutTheFieldCenter() {
+    // The 2026 field is rotationally symmetric, so the red hub has to be the
+    // blue hub turned 180 degrees around the center of the field.
+    Translation2d blueHub = DriveSubsystem.getHubLocation(DriverStation.Alliance.Blue);
+    Translation2d redHub = DriveSubsystem.getHubLocation(DriverStation.Alliance.Red);
+
+    assertEquals(FieldConstants.kFieldLengthMeters - redHub.getX(), blueHub.getX(), 0.01);
+    assertEquals(FieldConstants.kFieldWidthMeters - redHub.getY(), blueHub.getY(), 0.01);
+  }
+
+  @Test
+  void mirroringMovesTheRobotToTheRotatedSpotOnTheOtherSide() {
+    Pose2d bluePose = new Pose2d(4.626, 4.035, Rotation2d.fromDegrees(30.0));
+    Pose2d mirrored = DriveSubsystem.mirrorPoseAcrossField(bluePose);
+
+    assertEquals(FieldConstants.kFieldLengthMeters - 4.626, mirrored.getX(), EPSILON);
+    assertEquals(FieldConstants.kFieldWidthMeters - 4.035, mirrored.getY(), EPSILON);
+    assertEquals(-150.0, mirrored.getRotation().getDegrees(), EPSILON);
+  }
+
+  @Test
+  void mirroringIsItsOwnInverse() {
+    Pose2d pose = new Pose2d(3.25, 6.5, Rotation2d.fromDegrees(42.0));
+    Pose2d roundTrip =
+        DriveSubsystem.mirrorPoseAcrossField(DriveSubsystem.mirrorPoseAcrossField(pose));
+
+    assertEquals(pose.getX(), roundTrip.getX(), EPSILON);
+    assertEquals(pose.getY(), roundTrip.getY(), EPSILON);
+    assertEquals(pose.getRotation().getDegrees(), roundTrip.getRotation().getDegrees(), EPSILON);
+  }
+
+  @Test
+  void mirroredPoseIsWherePathPlannerFlipsThePath() {
+    // PathPlanner flips a blue-authored path for the red alliance by rotating
+    // it 180 degrees about the field center, so the mirrored robot has to end
+    // up exactly where the flipped path starts.
+    Pose2d startPose = new Pose2d(5.0, 2.5, Rotation2d.fromDegrees(0.0));
+    Pose2d flippedStart = DriveSubsystem.mirrorPoseAcrossField(startPose);
+
+    assertEquals(FieldConstants.kFieldLengthMeters - 5.0, flippedStart.getX(), EPSILON);
+    assertEquals(FieldConstants.kFieldWidthMeters - 2.5, flippedStart.getY(), EPSILON);
+    assertEquals(-180.0, flippedStart.getRotation().getDegrees(), EPSILON);
   }
 
 }
