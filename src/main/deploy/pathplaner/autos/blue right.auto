@@ -1,0 +1,37 @@
+{
+  "version": "2025.0",
+  "command": {
+    "type": "sequential",
+    "data": {
+      "commands": [
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Blue right fuel intake"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "AutoDeployAndSpin"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Blue Right fuel to shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "AutoAimAndShoot"
+          }
+        }
+      ]
+    }
+  },
+  "resetOdom": true,
+  "folder": null,
+  "choreoAuto": false
+}

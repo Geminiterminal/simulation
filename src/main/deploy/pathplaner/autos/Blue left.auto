@@ -1,0 +1,43 @@
+{
+  "version": "2025.0",
+  "command": {
+    "type": "sequential",
+    "data": {
+      "commands": [
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Blue Left trench to fuel"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "AutoDeployAndSpin"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Blue left fuel intake"
+          }
+        },
+        {
+          "type": "path",
+          "data": {
+            "pathName": "Blue left fuel to shoot"
+          }
+        },
+        {
+          "type": "named",
+          "data": {
+            "name": "ShootForXseconds"
+          }
+        }
+      ]
+    }
+  },
+  "resetOdom": true,
+  "folder": null,
+  "choreoAuto": false
+}
