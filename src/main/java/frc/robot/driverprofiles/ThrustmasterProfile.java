@@ -69,6 +69,8 @@ public class ThrustmasterProfile implements DriverControlsProfile {
     @Override public Trigger startShotCycle() { return new Trigger(() -> joystick.getRawButton(8));}
     // NEW: Using Button 9 on the Thrustmaster so it doesn't conflict with Deploy Intake (Button 7)
     @Override public Trigger forceReseedTrigger() { return new Trigger(() -> joystick.getRawButton(9)); }
+    // Simulation helper: switch between the red and blue alliance.
+    @Override public Trigger toggleAllianceTrigger() { return new Trigger(() -> joystick.getRawButton(12)); }
 
 
  public void periodic() {
