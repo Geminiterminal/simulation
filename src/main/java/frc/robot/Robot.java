@@ -79,4 +79,11 @@ public class Robot extends TimedRobot {
 
   @Override
   public void testPeriodic() {}
+
+  @Override
+  public void simulationPeriodic() {
+    // Runs after CommandScheduler.run() (so after every subsystem's
+    // simulationPeriodic): aggregate current draws into the battery model.
+    m_robotContainer.simulationPeriodic();
+  }
 }

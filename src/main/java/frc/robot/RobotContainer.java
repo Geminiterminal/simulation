@@ -36,6 +36,8 @@ import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.path.PathConstraints;
 import com.pathplanner.lib.path.PathPlannerPath;
 import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.simulation.BatterySim;
+import edu.wpi.first.wpilibj.simulation.RoboRioSim;
 
 
 public class RobotContainer {
@@ -92,11 +94,31 @@ public class RobotContainer {
 
         SmartDashboard.putNumber(AUTO_AIM_DISTANCE_IN_KEY, AUTO_AIM_DEFAULT_DISTANCE_IN);
 
-        configurePathPlanner(); 
+        // In simulation: give the camera sim the drivetrain's ground truth so
+        // the PhotonVision fusion pipeline runs against synthetic AprilTag
+        // frames. No-op on the real robot.
+        visionSystem.setupSimulation(m_robotDrive::getSimPose);
+
+        configurePathPlanner();
         configureProfileChooser();
         configureThrustmasterSpeedChooser();
         configureDefaultDriveCommand();
         configureBindings();
+    }
+
+    /**
+     * Simulation-only hook, called from Robot.simulationPeriodic (runs after
+     * the command scheduler, i.e. after every subsystem's simulationPeriodic).
+     * Aggregates all mechanism current draws and updates the simulated battery
+     * bus voltage, producing realistic voltage sag under load.
+     */
+    public void simulationPeriodic() {
+        double totalCurrentDrawAmps = m_robotDrive.getSimulatedCurrentDraw()
+            + shooter.getSimulatedCurrentDraw()
+            + intake.getSimulatedCurrentDraw();
+
+        RoboRioSim.setVInVoltage(
+            BatterySim.calculateDefaultBatteryLoadedVoltage(totalCurrentDrawAmps));
     }
 
     private void configurePathPlanner() {
@@ -418,6 +440,13 @@ private Command driveToLeftTrench() {
 
     public Command getAutonomousCommand() {
         String selected = autoChooser.getSelected();
+        // "Do Nothing" (and any unbuilt/missing auto name) must not construct
+        // PathPlannerAuto, which throws when the .auto file does not exist —
+        // especially important in simulation where the default option runs
+        // every time autonomous is enabled.
+        if (selected == null || "NONE".equals(selected)) {
+            return Commands.none();
+        }
         return new PathPlannerAuto(selected);
     }
 }
