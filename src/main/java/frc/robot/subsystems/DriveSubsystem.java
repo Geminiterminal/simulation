@@ -7,19 +7,19 @@ import edu.wpi.first.hal.HAL;
 import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
-import edu.wpi.first.math.geometry.Rotation3d;
 import edu.wpi.first.math.geometry.Translation2d;
-import edu.wpi.first.math.geometry.Translation3d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.kinematics.SwerveDriveKinematics;
 import edu.wpi.first.math.kinematics.SwerveModulePosition;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
+import edu.wpi.first.math.geometry.Twist2d;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.Joystick;
+import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj.smartdashboard.Field2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.math.MathUtil;
-import edu.wpi.first.math.util.Units;
 import edu.wpi.first.math.VecBuilder; // WPILib standard deviations
 
 import java.util.Optional;
@@ -28,6 +28,8 @@ import com.studica.frc.AHRS;
 import com.studica.frc.AHRS.NavXComType;
 
 import frc.robot.Constants.DriveConstants;
+import frc.robot.Constants.SimulationConstants;
+import frc.robot.Constants.VisionConstants;
 import frc.robot.driverprofiles.ThrustmasterProfile;
 
 import com.pathplanner.lib.config.PIDConstants;
@@ -67,8 +69,18 @@ public class DriveSubsystem extends SubsystemBase {
       DriveConstants.kRearRightTurningCanId,
       DriveConstants.kBackRightChassisAngularOffset);
 
-  // The gyro sensor
-  private final AHRS m_gyro = new AHRS(NavXComType.kMXP_SPI);
+  // The gyro sensor. On the real robot this is the navX MXP. In simulation
+  // there is no navX hardware, so the heading is integrated from the swerve
+  // physics instead (see simulationPeriodic and getSimPose).
+  private final AHRS m_gyro = RobotBase.isSimulation() ? null : new AHRS(NavXComType.kMXP_SPI);
+
+  // --- Simulation ground truth (real hardware needs no analog) ---
+  // NOTE: declared before m_poseEstimator, whose initializer reads
+  // getGyroRotation() (which consults these in simulation).
+  private final boolean m_isSim = RobotBase.isSimulation();
+  private Pose2d m_simRobotPose = new Pose2d();
+  private double m_simOmegaRadPerSecond = 0.0;
+  private final Field2d m_simField = new Field2d();
 
   // vision usage tracking
   private double m_lastVisionFuseTime = -1.0;
@@ -118,39 +130,19 @@ public class DriveSubsystem extends SubsystemBase {
  // === PhotonVision / AprilTag stuff ===
 
   // Camera and PhotonPoseEstimator ----------------------------
-  private final PhotonCamera m_oldLeftCamera = new PhotonCamera("FrontCamera"); // now our back camera
-  private final PhotonCamera m_frontCamera = new PhotonCamera("GoodCamera_OldLeft"); // actually side camera now
+  // Names and transforms are shared with the vision simulation via
+  // VisionConstants so the sim publishes frames to these exact cameras.
+  private final PhotonCamera m_oldLeftCamera = new PhotonCamera(VisionConstants.kBackCameraName); // now our back camera
+  private final PhotonCamera m_frontCamera = new PhotonCamera(VisionConstants.kSideCameraName); // actually side camera now
   private final PhotonPoseEstimator m_oldLeftCameraEstimator;
   private final PhotonPoseEstimator m_frontCameraEstimator;
 
   // Camera pose estimator ----------------------------------
   // transform for current back camera
-  private final Transform3d m_robotToCamera = new Transform3d(
-      new Translation3d(
-          Units.inchesToMeters(-12.25),   // X
-          Units.inchesToMeters(-10.75),    // Y
-          Units.inchesToMeters(17.125)    // Z
-      ),
-      new Rotation3d(
-          Units.degreesToRadians(0.0),   // Roll
-          Units.degreesToRadians(0.0), // Pitch
-          Units.degreesToRadians(180.0)   // Yaw
-      )
-  );
+  private final Transform3d m_robotToCamera = VisionConstants.kRobotToBackCamera;
 
   // transform for current side camera
-  private final Transform3d m_robotToFrontCamera = new Transform3d(
-      new Translation3d(
-          Units.inchesToMeters(-10),
-          Units.inchesToMeters(-13),
-          Units.inchesToMeters(16.19)
-      ),
-      new Rotation3d(
-          Units.degreesToRadians(0.0),
-          Units.degreesToRadians(0.0),
-          Units.degreesToRadians(-90.0)
-      )
-  );
+  private final Transform3d m_robotToFrontCamera = VisionConstants.kRobotToSideCamera;
 
   //------------------------------------------------------------------------------------------------------
 
@@ -217,6 +209,11 @@ public class DriveSubsystem extends SubsystemBase {
   }
 
   public Rotation2d getGyroRotation() {
+      if (m_isSim) {
+        // Heading integrated from the simulated swerve modules (CCW positive),
+        // taking the place of the navX in the pose estimator.
+        return m_simRobotPose.getRotation();
+      }
       return Rotation2d.fromDegrees(-m_gyro.getAngle());
   }
 
@@ -285,6 +282,12 @@ public class DriveSubsystem extends SubsystemBase {
     
     // THE SECRET SAUCE: Tell PathPlanner to check our override method before rotating
     PPHolonomicDriveController.setRotationTargetOverride(this::getRotationTargetOverride);
+
+    // Publish the simulated field so the robot pose can be watched in the sim
+    // GUI / dashboards (Glass, AdvantageScope).
+    if (m_isSim) {
+      SmartDashboard.putData("Field", m_simField);
+    }
   }
 
   private static final double kHeadingToleranceDeg = 2.0;
@@ -341,10 +344,12 @@ public class DriveSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Robot Heading (deg)", getPose().getRotation().getDegrees());
 
     // Gyro data
-    SmartDashboard.putNumber("Raw Gyro Y", m_gyro.getRawGyroY());
-    SmartDashboard.putNumber("NavX Angle", m_gyro.getAngle());
-    SmartDashboard.putNumber("NavX Rotation", m_gyro.getRotation2d().getDegrees());
-    SmartDashboard.putNumber("NavX Raw Yaw", m_gyro.getYaw());
+    if (!m_isSim) {
+      SmartDashboard.putNumber("Raw Gyro Y", m_gyro.getRawGyroY());
+      SmartDashboard.putNumber("NavX Angle", m_gyro.getAngle());
+      SmartDashboard.putNumber("NavX Rotation", m_gyro.getRotation2d().getDegrees());
+      SmartDashboard.putNumber("NavX Raw Yaw", m_gyro.getYaw());
+    }
 
     // Vision status
     SmartDashboard.putBoolean("Vision Active", m_visionActive);
@@ -382,6 +387,12 @@ public class DriveSubsystem extends SubsystemBase {
    * @param pose The pose to which to set the odometry.
    */
   public void resetOdometry(Pose2d pose) {
+    if (m_isSim) {
+      // On the real robot the driver physically places the robot at the start
+      // of the auto; in simulation we move the ground-truth pose instead so
+      // PathPlanner starts from its authored pose.
+      m_simRobotPose = new Pose2d(pose.getTranslation(), m_simRobotPose.getRotation());
+    }
     // PathPlanner may reset translation at the beginning of an auto, but its
     // authored rotation must not replace the vision/alliance-established heading.
     resetOdometryFromKnownFieldPose(
@@ -590,6 +601,9 @@ public class DriveSubsystem extends SubsystemBase {
    * @return The turn rate of the robot, in degrees per second
    */
   public double getTurnRate() {
+    if (m_isSim) {
+      return Math.toDegrees(m_simOmegaRadPerSecond);
+    }
     return m_gyro.getRate() * (DriveConstants.kGyroReversed ? -1.0 : 1.0);
   }
 
@@ -698,5 +712,77 @@ public class DriveSubsystem extends SubsystemBase {
     m_headingPID.reset();
 
     drive(0.0, 0.0, 0.0);
+  }
+
+  // =========================================================================
+  // --- SIMULATION: chassis-level physics integration ---
+  // =========================================================================
+
+  /**
+   * Steps all four module physics models and integrates the resulting measured
+   * chassis speed into the ground-truth robot pose. The pose estimator then
+   * consumes the same module states (through the simulated encoders) and the
+   * integrated heading (through {@link #getGyroRotation()}), so estimation and
+   * ground truth track each other exactly as they would on the real robot.
+   */
+  @Override
+  public void simulationPeriodic() {
+    double dt = SimulationConstants.kLoopPeriodSeconds;
+
+    // 1. Step the motor physics of every module (closed motor loops are
+    //    emulated by REVLib; see MAXSwerveModule).
+    m_frontLeft.simulationPeriodic(dt);
+    m_frontRight.simulationPeriodic(dt);
+    m_rearLeft.simulationPeriodic(dt);
+    m_rearRight.simulationPeriodic(dt);
+
+    // 2. Compute measured chassis speeds from the simulated encoders. Reading
+    //    the encoders (rather than the physics models directly) means anything
+    //    that would break odometry on the real robot shows up here too.
+    ChassisSpeeds measuredSpeeds = DriveConstants.kDriveKinematics.toChassisSpeeds(
+        m_frontLeft.getState(),
+        m_frontRight.getState(),
+        m_rearLeft.getState(),
+        m_rearRight.getState());
+    m_simOmegaRadPerSecond = measuredSpeeds.omegaRadiansPerSecond;
+
+    // 3. Integrate ground-truth pose (exponential update, same math as the
+    //    pose estimator's update step).
+    Twist2d twist = new Twist2d(
+        measuredSpeeds.vxMetersPerSecond * dt,
+        measuredSpeeds.vyMetersPerSecond * dt,
+        measuredSpeeds.omegaRadiansPerSecond * dt);
+    m_simRobotPose = m_simRobotPose.exp(twist);
+
+    // 4. Visualization: ground truth (robot) vs. pose estimate.
+    m_simField.setRobotPose(m_simRobotPose);
+    m_simField.getObject("Pose Estimator").setPose(getPose());
+
+    SwerveModuleState[] desiredStates = {
+        m_frontLeft.getDesiredState(), m_frontRight.getDesiredState(),
+        m_rearLeft.getDesiredState(), m_rearRight.getDesiredState()};
+    SmartDashboard.putNumber("Sim/FL Desired Speed (mps)", desiredStates[0].speedMetersPerSecond);
+    SmartDashboard.putNumber("Sim/Ground Truth X (m)", m_simRobotPose.getX());
+    SmartDashboard.putNumber("Sim/Ground Truth Y (m)", m_simRobotPose.getY());
+    SmartDashboard.putNumber("Sim/Ground Truth Heading (deg)", m_simRobotPose.getRotation().getDegrees());
+  }
+
+  /**
+   * Returns the simulated robot's ground-truth field pose. Used by the vision
+   * simulation to compute what the cameras would see, and by dashboards.
+   */
+  public Pose2d getSimPose() {
+    return m_simRobotPose;
+  }
+
+  /** Total simulated stator current draw of the drivetrain, in amps. */
+  public double getSimulatedCurrentDraw() {
+    if (!m_isSim) {
+      return 0.0;
+    }
+    return m_frontLeft.getSimulatedCurrentDraw()
+        + m_frontRight.getSimulatedCurrentDraw()
+        + m_rearLeft.getSimulatedCurrentDraw()
+        + m_rearRight.getSimulatedCurrentDraw();
   }
 }

@@ -4,7 +4,10 @@
 
 package frc.robot;
 
+import edu.wpi.first.math.geometry.Rotation3d;
+import edu.wpi.first.math.geometry.Transform3d;
 import edu.wpi.first.math.geometry.Translation2d;
+import edu.wpi.first.math.geometry.Translation3d;
 import edu.wpi.first.math.kinematics.SwerveDriveKinematics;
 import edu.wpi.first.math.trajectory.TrapezoidProfile;
 import edu.wpi.first.math.util.Units;
@@ -99,5 +102,137 @@ public final class Constants {
 
   public static final class NeoMotorConstants {
     public static final double kFreeSpeedRpm = 5676;
+  }
+
+  /**
+   * Vision hardware metadata shared by the real robot code (DriveSubsystem) and
+   * the PhotonVision simulation (VisionSubsystem). Keeping the camera names and
+   * robot-to-camera transforms in one place guarantees the simulated cameras see
+   * exactly what the real cameras see, so the pose-fusion pipeline behaves
+   * identically on and off the field.
+   */
+  public static final class VisionConstants {
+    // NOTE: the physical "FrontCamera" unit is mounted facing the REAR of the robot.
+    public static final String kBackCameraName = "FrontCamera";
+    public static final String kSideCameraName = "GoodCamera_OldLeft";
+
+    // Transform for the rear-facing camera (measured from robot center).
+    public static final Transform3d kRobotToBackCamera = new Transform3d(
+        new Translation3d(
+            Units.inchesToMeters(-12.25), // X
+            Units.inchesToMeters(-10.75), // Y
+            Units.inchesToMeters(17.125) // Z
+        ),
+        new Rotation3d(
+            Units.degreesToRadians(0.0), // Roll
+            Units.degreesToRadians(0.0), // Pitch
+            Units.degreesToRadians(180.0) // Yaw
+        ));
+
+    // Transform for the left-side-facing camera (measured from robot center).
+    public static final Transform3d kRobotToSideCamera = new Transform3d(
+        new Translation3d(
+            Units.inchesToMeters(-10),
+            Units.inchesToMeters(-13),
+            Units.inchesToMeters(16.19)
+        ),
+        new Rotation3d(
+            Units.degreesToRadians(0.0),
+            Units.degreesToRadians(0.0),
+            Units.degreesToRadians(-90.0)
+        ));
+
+    // Simulated camera characteristics (calibrated to the team's cameras).
+    // Re-measure intrinsics with the PhotonVision camera calibration tool and
+    // update these numbers if the real calibration deviates.
+    public static final int kSimCameraWidthPx = 1280;
+    public static final int kSimCameraHeightPx = 720;
+    public static final double kSimCameraDiagonalFovDeg = 75.0;
+    public static final double kSimCameraCalibErrorPx = 0.25;
+    public static final double kSimCameraCalibErrorStdPx = 0.08;
+    public static final double kSimCameraFps = 30.0;
+    public static final double kSimCameraAvgLatencyMs = 30.0;
+    public static final double kSimCameraLatencyStdDevMs = 5.0;
+    // PhotonVision multi-tag/PNP rarely solves reliably beyond this range.
+    public static final double kSimCameraMaxSightRangeMeters = 6.0;
+  }
+
+  /**
+   * Physics calibration used ONLY in simulation (RobotBase.isSimulation()).
+   *
+   * <p>These values describe the physical robot so the WPILib physics models
+   * (DCMotorSim / FlywheelSim / SingleJointedArmSim) reproduce real behavior:
+   * acceleration limits, spin-up times, current draw and battery sag. They do
+   * not affect code deployed to the roboRIO.
+   *
+   * <p>See SIMULATION.md for how each number was measured/estimated and how to
+   * re-calibrate (e.g. with SysId) if the robot changes.
+   */
+  public static final class SimulationConstants {
+    // ------------------------------------------------------------------
+    // Chassis (matches the PathPlanner GUI robot configuration, which was
+    // itself measured: full robot + bumpers + battery)
+    // ------------------------------------------------------------------
+    public static final double kRobotMassKg = 65.0;
+    public static final double kRobotMOIKgMetersSquared = 5.7; // about the vertical axis
+
+    // Wheel radius: 3-inch diameter wheels (ModuleConstants.kWheelDiameterMeters).
+    public static final double kWheelRadiusMeters = ModuleConstants.kWheelDiameterMeters / 2.0;
+
+    // Drive gearbox: MAXSwerve with 13T pinion -> (45*22)/(13*15) = 5.077:1
+    public static final double kDriveGearRatio = ModuleConstants.kDrivingMotorReduction;
+
+    // Steering gearbox: MAXSwerve azimuth reduction is 9424:203 (~46.42:1) per REV.
+    public static final double kTurnGearRatio = 9424.0 / 203.0;
+
+    // Effective inertia of one drive wheel as seen at the wheel axle: the
+    // quarter-chassis it pushes ((m/4)*r^2) plus the wheel's own spin inertia
+    // (~0.5 * m_wheel * r^2 for a ~50 g Colson wheel).
+    public static final double kDriveWheelInertiaKgMetersSquared =
+        (kRobotMassKg / 4.0) * kWheelRadiusMeters * kWheelRadiusMeters
+            + 0.5 * 0.050 * kWheelRadiusMeters * kWheelRadiusMeters;
+
+    // Rotational inertia of one swerve module about its steering axis (typical
+    // MAXSwerve value; small effects only - steering just sets wheel direction).
+    public static final double kSteerInertiaKgMetersSquared = 0.004;
+
+    // ------------------------------------------------------------------
+    // Shooter. The 1:1 motor ratios are confirmed by the feedforward gain
+    // (kF = 1 / NEO free speed RPM, i.e. full voltage at free speed, so the
+    // controller output units are motor-side RPM).
+    // ------------------------------------------------------------------
+    public static final double kShooterFlywheelGearRatio = 1.0;
+    // Estimate for one 4" flywheel + shaft/hardware (~1.3 kg at 5 cm radius,
+    // 0.5*m*r^2) plus shaft and pulleys. Re-identify with SysId for accuracy.
+    public static final double kShooterFlywheelMoiKgMetersSquared = 0.0025;
+
+    public static final double kFeederGearRatio = 1.0;
+    public static final double kFeederMoiKgMetersSquared = 0.001;
+
+    // ------------------------------------------------------------------
+    // Intake mechanisms
+    // ------------------------------------------------------------------
+    // Roller (Kraken X60) and conveyor (NEO): small drums, roughly 1:1.
+    public static final double kIntakeRollerGearRatio = 1.0;
+    public static final double kIntakeRollerMoiKgMetersSquared = 0.0008;
+    public static final double kConveyorGearRatio = 1.0;
+    public static final double kConveyorMoiKgMetersSquared = 0.002;
+
+    // Deploy arm: the code commands positions 0 (stowed) to 59 motor rotations
+    // (deployed). Calibrated so that 59 rotations = 100 degrees of arm travel;
+    // total reduction = 59 * 360 / 100 ~ 212.4:1 (gearbox + external stage).
+    public static final double kDeployArmGearRatio = 59.0 * 360.0 / 100.0;
+    public static final double kDeployArmLengthMeters = 0.30;
+    public static final double kDeployArmMassKg = 3.0;
+    // Stowed = 0 deg (horizontal), deployed = +100 deg (down over the bumper).
+    public static final double kDeployArmStowedAngleRad = Units.degreesToRadians(0.0);
+    public static final double kDeployArmDeployedAngleRad = Units.degreesToRadians(100.0);
+    public static final double kDeployArmMaxAngleRad = Units.degreesToRadians(105.0);
+
+    // ------------------------------------------------------------------
+    // Simulation runtime
+    // ------------------------------------------------------------------
+    // Standard robot loop period; the physics are stepped at this rate.
+    public static final double kLoopPeriodSeconds = 0.020;
   }
 }

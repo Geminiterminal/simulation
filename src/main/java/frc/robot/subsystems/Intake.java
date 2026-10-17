@@ -18,10 +18,26 @@ import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.InvertedValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.ctre.phoenix6.sim.TalonFXSimState;
 
+import com.revrobotics.sim.SparkFlexSim;
+import com.revrobotics.sim.SparkMaxSim;
+
+import edu.wpi.first.math.system.plant.DCMotor;
+import edu.wpi.first.math.system.plant.LinearSystemId;
+import edu.wpi.first.math.util.Units;
+import edu.wpi.first.wpilibj.RobotBase;
+import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj.simulation.DCMotorSim;
+import edu.wpi.first.wpilibj.simulation.SingleJointedArmSim;
+import edu.wpi.first.wpilibj.smartdashboard.Mechanism2d;
+import edu.wpi.first.wpilibj.smartdashboard.MechanismLigament2d;
+import edu.wpi.first.wpilibj.smartdashboard.MechanismRoot2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+
+import frc.robot.Constants.SimulationConstants;
 
 public class Intake extends SubsystemBase {
 
@@ -73,6 +89,15 @@ public class Intake extends SubsystemBase {
     private boolean rollerRunning = false;
     private double deployTargetPosition = DEPLOY_POSITION;
     private double shotCycleDwellStartTime = -1.0;
+
+    // --- Simulation members (null on the real robot) ---
+    private SparkFlexSim m_deploySparkSim;
+    private SingleJointedArmSim m_deployArmPhysics;
+    private TalonFXSimState m_rollerSimState;
+    private DCMotorSim m_rollerPhysics;
+    private SparkMaxSim m_conveyorSparkSim;
+    private DCMotorSim m_conveyorPhysics;
+    private MechanismLigament2d m_armViz;
 
     // --- Constants ---
     private static final int DEPLOY_MOTOR_ID   = 9;
@@ -126,6 +151,49 @@ public class Intake extends SubsystemBase {
         conveyorConfig.closedLoop.pid(CONVEYOR_kP, CONVEYOR_kI, CONVEYOR_kD);
         conveyorConfig.closedLoop.feedForward.kV(CONVEYOR_kV);
         conveyorMotor.configure(conveyorConfig, ResetMode.kResetSafeParameters, PersistMode.kPersistParameters);
+
+        // --- Simulation setup: physics models + controller emulators ---
+        if (RobotBase.isSimulation()) {
+            // Deploy arm: single-jointed arm with gravity, Neo Vortex through
+            // the calibrated total reduction.
+            m_deploySparkSim = new SparkFlexSim(deployMotor, DCMotor.getNeoVortex(1));
+            m_deployArmPhysics = new SingleJointedArmSim(
+                DCMotor.getNeoVortex(1),
+                SimulationConstants.kDeployArmGearRatio,
+                SingleJointedArmSim.estimateMOI(
+                    SimulationConstants.kDeployArmLengthMeters,
+                    SimulationConstants.kDeployArmMassKg),
+                SimulationConstants.kDeployArmLengthMeters,
+                Units.degreesToRadians(-95.0),
+                SimulationConstants.kDeployArmMaxAngleRad,
+                true, // simulate gravity
+                SimulationConstants.kDeployArmStowedAngleRad);
+
+            // Roller (Kraken X60 / TalonFX).
+            m_rollerSimState = rollerMotor.getSimState();
+            m_rollerPhysics = new DCMotorSim(
+                LinearSystemId.createDCMotorSystem(
+                    DCMotor.getKrakenX60(1),
+                    SimulationConstants.kIntakeRollerMoiKgMetersSquared,
+                    SimulationConstants.kIntakeRollerGearRatio),
+                DCMotor.getKrakenX60(1));
+
+            // Conveyor (NEO / SPARK MAX).
+            m_conveyorSparkSim = new SparkMaxSim(conveyorMotor, DCMotor.getNEO(1));
+            m_conveyorPhysics = new DCMotorSim(
+                LinearSystemId.createDCMotorSystem(
+                    DCMotor.getNEO(1),
+                    SimulationConstants.kConveyorMoiKgMetersSquared,
+                    SimulationConstants.kConveyorGearRatio),
+                DCMotor.getNEO(1));
+
+            // Visual widget for the deploy arm.
+            Mechanism2d mech = new Mechanism2d(0.8, 0.8);
+            MechanismRoot2d root = mech.getRoot("Intake Pivot", 0.4, 0.15);
+            m_armViz = root.append(new MechanismLigament2d(
+                "Deploy Arm", 0.35, 90.0)); // drawn pointing up when stowed
+            SmartDashboard.putData("Intake Arm", mech);
+        }
     }
 
     // --- Singleton ---
@@ -225,5 +293,65 @@ public class Intake extends SubsystemBase {
         SmartDashboard.putNumber("Intake Roller Target RPM", ROLLER_TARGET_RPM);
         SmartDashboard.putNumber("Intake Roller RPM", rollerMotor.getVelocity().getValueAsDouble() * 60.0);
         SmartDashboard.putNumber("Deploy Position (Rotations)", deployMotor.getEncoder().getPosition());
+    }
+
+    /**
+     * Simulation: deploy-arm physics (single-jointed arm with gravity, driven
+     * through the calibrated gearbox) plus roller and conveyor drum physics.
+     * The SPARK controller loops are emulated by REVLib (including MAXMotion);
+     * the TalonFX runs Phoenix's own closed-loop sim.
+     */
+    @Override
+    public void simulationPeriodic() {
+        if (!RobotBase.isSimulation()) {
+            return;
+        }
+        double dt = SimulationConstants.kLoopPeriodSeconds;
+        double busVoltage = RobotController.getBatteryVoltage();
+
+        // Deploy arm. The SPARK encoder has no conversion factors configured,
+        // so iterate() expects MOTOR rpm; convert arm velocity through the
+        // gearbox.
+        m_deployArmPhysics.setInput(m_deploySparkSim.getAppliedOutput() * busVoltage);
+        m_deployArmPhysics.update(dt);
+        m_deploySparkSim.iterate(
+            Units.radiansPerSecondToRotationsPerMinute(
+                m_deployArmPhysics.getVelocityRadPerSec()
+                    * SimulationConstants.kDeployArmGearRatio),
+            busVoltage, dt);
+
+        // Roller (Phoenix 6 sim).
+        m_rollerSimState.setSupplyVoltage(busVoltage);
+        m_rollerPhysics.setInputVoltage(m_rollerSimState.getMotorVoltage());
+        m_rollerPhysics.update(dt);
+        m_rollerSimState.setRawRotorPosition(
+            m_rollerPhysics.getAngularPositionRotations()
+                * SimulationConstants.kIntakeRollerGearRatio);
+        m_rollerSimState.setRotorVelocity(
+            m_rollerPhysics.getAngularVelocityRPM() / 60.0
+                * SimulationConstants.kIntakeRollerGearRatio);
+
+        // Conveyor (encoder units are native RPM).
+        m_conveyorPhysics.setInputVoltage(m_conveyorSparkSim.getAppliedOutput() * busVoltage);
+        m_conveyorPhysics.update(dt);
+        m_conveyorSparkSim.iterate(m_conveyorPhysics.getAngularVelocityRPM(), busVoltage, dt);
+
+        // Arm visualization: stowed = pointing up (90 deg), deployed swings down.
+        double armAngleDeg = Units.radiansToDegrees(m_deployArmPhysics.getAngleRads());
+        m_armViz.setAngle(90.0 - armAngleDeg);
+        SmartDashboard.putNumber("Sim/Deploy Arm Angle (deg)", armAngleDeg);
+    }
+
+    /** Total simulated stator current draw of the intake, in amps. */
+    public double getSimulatedCurrentDraw() {
+        if (!RobotBase.isSimulation()) {
+            return 0.0;
+        }
+        return m_deploySparkSim.getMotorCurrent()
+            + m_conveyorSparkSim.getMotorCurrent()
+            + DCMotor.getKrakenX60(1).getCurrent(
+                m_rollerPhysics.getAngularVelocityRadPerSec()
+                    * SimulationConstants.kIntakeRollerGearRatio,
+                m_rollerSimState.getMotorVoltage());
     }
 }

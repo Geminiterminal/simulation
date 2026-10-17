@@ -17,12 +17,18 @@ import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import com.ctre.phoenix6.signals.InvertedValue;
+import com.ctre.phoenix6.sim.TalonFXSimState;
 
 import edu.wpi.first.math.interpolation.InterpolatingDoubleTreeMap;
+import edu.wpi.first.math.system.plant.LinearSystemId;
+import edu.wpi.first.wpilibj.RobotBase;
+import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import edu.wpi.first.math.system.plant.DCMotor;
+import edu.wpi.first.wpilibj.simulation.DCMotorSim;
 import edu.wpi.first.wpilibj.simulation.FlywheelSim;
+import frc.robot.Constants.SimulationConstants;
 import frc.robot.RobotContainer;
 
 public class Shooter extends SubsystemBase {
@@ -73,6 +79,14 @@ public class Shooter extends SubsystemBase {
     private static final double FEEDER_kD = 0.0;
     private static final double FEEDER_kV = 0.12;
 
+    // --- Simulation members (null on the real robot) ---
+    private SparkMaxSim m_frontSparkSim;
+    private SparkMaxSim m_backSparkSim;
+    private FlywheelSim m_frontPhysics;
+    private FlywheelSim m_backPhysics;
+    private TalonFXSimState m_feederSimState;
+    private DCMotorSim m_feederPhysics;
+
     public Shooter() {
 
         m_rpmMap.put(215.0, 5000.0);
@@ -122,6 +136,34 @@ public class Shooter extends SubsystemBase {
         feederConfig.Slot0.kV = FEEDER_kV;
 
         feederMain.getConfigurator().apply(feederConfig);
+
+        // --- Simulation setup: physics models + controller emulators ---
+        if (RobotBase.isSimulation()) {
+            m_frontSparkSim = new SparkMaxSim(shooterFront, DCMotor.getNEO(1));
+            m_backSparkSim = new SparkMaxSim(shooterBack, DCMotor.getNEO(1));
+            m_frontPhysics = new FlywheelSim(
+                LinearSystemId.createFlywheelSystem(
+                    DCMotor.getNEO(1),
+                    SimulationConstants.kShooterFlywheelMoiKgMetersSquared,
+                    SimulationConstants.kShooterFlywheelGearRatio),
+                DCMotor.getNEO(1));
+            m_backPhysics = new FlywheelSim(
+                LinearSystemId.createFlywheelSystem(
+                    DCMotor.getNEO(1),
+                    SimulationConstants.kShooterFlywheelMoiKgMetersSquared,
+                    SimulationConstants.kShooterFlywheelGearRatio),
+                DCMotor.getNEO(1));
+
+            // Phoenix 6 controllers simulate their onboard loops internally;
+            // we supply the physics of the mechanism they are driving.
+            m_feederSimState = feederMain.getSimState();
+            m_feederPhysics = new DCMotorSim(
+                LinearSystemId.createDCMotorSystem(
+                    DCMotor.getKrakenX60(1),
+                    SimulationConstants.kFeederMoiKgMetersSquared,
+                    SimulationConstants.kFeederGearRatio),
+                DCMotor.getKrakenX60(1));
+        }
     }
 
     // --- Singleton ---
@@ -255,4 +297,55 @@ public class Shooter extends SubsystemBase {
         SmartDashboard.putNumber("Feeder RPM", feederMain.getVelocity().getValueAsDouble() * 60.0);
         SmartDashboard.putNumber("Front Shooter Current Draw", shooterFront.getOutputCurrent());
         SmartDashboard.putNumber("Back Shooter Current Draw", shooterBack.getOutputCurrent());
-    }}
+    }
+
+    /**
+     * Simulation: flywheel and feeder physics. The SPARK MAX velocity loops
+     * are emulated by REVLib; the TalonFX runs Phoenix's own closed-loop sim;
+     * the WPILib mechanism models provide the physics both feedback against.
+     */
+    @Override
+    public void simulationPeriodic() {
+        if (!RobotBase.isSimulation()) {
+            return;
+        }
+        double dt = SimulationConstants.kLoopPeriodSeconds;
+        double busVoltage = RobotController.getBatteryVoltage();
+
+        // Flywheels (SPARK MAX, encoder units are native RPM).
+        m_frontPhysics.setInput(m_frontSparkSim.getAppliedOutput() * busVoltage);
+        m_backPhysics.setInput(m_backSparkSim.getAppliedOutput() * busVoltage);
+        m_frontPhysics.update(dt);
+        m_backPhysics.update(dt);
+        m_frontSparkSim.iterate(m_frontPhysics.getAngularVelocityRPM(), busVoltage, dt);
+        m_backSparkSim.iterate(m_backPhysics.getAngularVelocityRPM(), busVoltage, dt);
+
+        // Feeder (Kraken X60 / TalonFX). Phoenix sim provides the motor
+        // voltage; we integrate the drum and report rotor position/velocity.
+        m_feederSimState.setSupplyVoltage(busVoltage);
+        m_feederPhysics.setInputVoltage(m_feederSimState.getMotorVoltage());
+        m_feederPhysics.update(dt);
+        m_feederSimState.setRawRotorPosition(
+            m_feederPhysics.getAngularPositionRotations()
+                * SimulationConstants.kFeederGearRatio);
+        m_feederSimState.setRotorVelocity(
+            m_feederPhysics.getAngularVelocityRPM() / 60.0
+                * SimulationConstants.kFeederGearRatio);
+
+        SmartDashboard.putNumber("Sim/Shooter Front Velocity (RPM)", m_frontPhysics.getAngularVelocityRPM());
+        SmartDashboard.putNumber("Sim/Shooter Back Velocity (RPM)", m_backPhysics.getAngularVelocityRPM());
+    }
+
+    /** Total simulated stator current draw of the shooter, in amps. */
+    public double getSimulatedCurrentDraw() {
+        if (!RobotBase.isSimulation()) {
+            return 0.0;
+        }
+        return m_frontSparkSim.getMotorCurrent()
+            + m_backSparkSim.getMotorCurrent()
+            + DCMotor.getKrakenX60(1).getCurrent(
+                m_feederPhysics.getAngularVelocityRadPerSec()
+                    * SimulationConstants.kFeederGearRatio,
+                m_feederSimState.getMotorVoltage());
+    }
+}
