@@ -151,3 +151,26 @@ calibration the tests flag it.
 - **Arm hangs instead of stowing**: expected — with no command the MAXMotion
   loop is idle and gravity wins, same as hardware in brake-less conditions.
   Schedule a stow on robot boot if you want it held.
+
+## Startup errors and loop overruns
+
+- PathPlanner assets must live in `src/main/deploy/pathplanner` (two n's),
+  including `settings.json`, `autos/*.auto`, and `paths/*.path`. File names
+  are case-sensitive on Linux. The chooser lists only the three bundled autos;
+  failed configuration or auto loading reports an error and returns no command.
+- `blue right trench.path` is not bundled. The right-trench binding reports an
+  error and does nothing when requested until that route is authored/exported
+  from PathPlanner. Do not substitute a different route without checking it.
+- Joystick axis/button/POV warnings mean the selected control profile is reading
+  inputs absent from DS port 0. Map a controller (or a suitably configured
+  simulated joystick) to that port and select the matching driver profile.
+  They are separate from the PathPlanner startup failure.
+- Camera raw/processed video and wireframe rendering are disabled to reduce
+  desktop CPU load; synthetic AprilTag measurements and the debug field remain
+  enabled. Pose telemetry remains on SmartDashboard instead of printing every
+  second. The 20 ms loop deadline and overrun diagnostics remain unchanged.
+  If overruns persist after warmup, run without the Java debugger and profile
+  the simulation before changing physics or camera update rates.
+- Check deploy asset names/references without WPILib using
+  `python3 -m unittest discover -s tests`. Run `./gradlew test` in a WPILib Java
+  environment for the Java/physics tests.
