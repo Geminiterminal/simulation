@@ -84,6 +84,51 @@ The simulated driver station is kept in sync with the robot, so
 using. On the real robot the alliance comes from the FMS and cannot be
 changed - the toggle and the chooser are simulation-only.
 
+## Vision simulation (PhotonVision + AprilTags)
+
+The camera sim is a real PhotonVision pipeline, not a fake pose: the sim
+projects the field's AprilTags into the image, runs the actual AprilTag
+detector, and publishes the resulting `PhotonPipelineResult` onto the same
+NetworkTables topics the real coprocessor uses. The robot's own
+`PhotonCamera` / `PhotonPoseEstimator` code is therefore unchanged between the
+sim and the robot.
+
+How the pieces line up:
+
+| Piece | Where |
+|---|---|
+| Field layout (32 tags, 2026 Rebuilt Welded) | `VisionSubsystem` → `AprilTagFieldLayout.loadField(...)` |
+| Same layout in the sim's target set | `VisionSystemSim.addAprilTags(layout)` |
+| Same layout in each camera sim (multi-tag estimation) | `new PhotonCameraSim(cam, props, layout)` |
+| Same layout in the robot's estimators | `new PhotonPoseEstimator(layout, robotToCamera)` |
+| Camera name → NT topic | `PhotonCameraSim` publishes into `camera.getCameraTable()`, i.e. `/PhotonVision/<name>` |
+| Robot-to-camera transforms | `VisionConstants`, used by **both** the sim (`addCamera`) and the estimators |
+
+To check that it is actually working:
+
+1. Run the sim and open the sim GUI's **Camera** view: you should see
+   `FrontCamera-raw` / `FrontCamera-processed` streams (the processed one
+   draws the detected tag outlines).
+2. Drive the robot within ~6 m of a hub (`kSimCameraMaxSightRangeMeters`) and
+   point a camera at the tag wall. The `Vision Sim Field` widget shows the
+   tags, the camera FOV wedges and which tags are currently in view.
+3. `Vision Active` on the dashboard turns true and `Field Heading Source`
+   changes to `VISION FUSED` once a tag is being tracked.
+4. `Vision/FrontCamera Accepted` and `Vision/GoodCamera_OldLeft Accepted` show
+   which camera produced the last fused measurement.
+
+Things to know:
+
+- The cameras publish at 30 fps while the robot loop runs at 50 Hz, so each
+  frame is seen more than once; the fusion drops repeats so one frame is
+  never counted twice.
+- The sim stamps each frame with `now − latency` (30 ± 5 ms), which is the
+  capture time the pose estimator wants, so the fused measurement lines up
+  with the odometry timeline.
+- The sim camera's field of view, resolution and latency come from
+  `VisionConstants.kSimCamera*`; re-calibrate those against the real cameras
+  to make the sim match the robot.
+
 ## Calibration data
 
 All physics constants live in `Constants.SimulationConstants`; camera metadata

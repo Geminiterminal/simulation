@@ -69,10 +69,14 @@ public class VisionSubsystem extends SubsystemBase {
 
     // Camera names must match the PhotonCamera objects in DriveSubsystem so
     // the sim publishes to the tables they subscribe to.
+    // The tag layout is passed in explicitly: the camera sim uses its own copy
+    // for multi-tag estimation, and it has to be the same layout the pose
+    // estimators use or the sim and the robot would disagree about where the
+    // tags are.
     m_backCameraSim = new PhotonCameraSim(
-        new PhotonCamera(VisionConstants.kBackCameraName), backCamProps);
+        new PhotonCamera(VisionConstants.kBackCameraName), backCamProps, m_tagLayout);
     m_sideCameraSim = new PhotonCameraSim(
-        new PhotonCamera(VisionConstants.kSideCameraName), sideCamProps);
+        new PhotonCamera(VisionConstants.kSideCameraName), sideCamProps, m_tagLayout);
 
     m_backCameraSim.setMaxSightRange(VisionConstants.kSimCameraMaxSightRangeMeters);
     m_sideCameraSim.setMaxSightRange(VisionConstants.kSimCameraMaxSightRangeMeters);

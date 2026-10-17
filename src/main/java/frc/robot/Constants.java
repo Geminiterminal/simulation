@@ -154,7 +154,13 @@ public final class Constants {
             Units.degreesToRadians(180.0) // Yaw
         ));
 
-    // Transform for the left-side-facing camera (measured from robot center).
+    // Transform for the side-facing camera (measured from robot center).
+    // NOTE: the -13" Y offset puts the unit 13" to the RIGHT of the robot
+    // center, and the -90 deg yaw points its optical axis to the robot's
+    // right (+Y is to the left in the robot frame), so this camera looks out
+    // of the right side of the robot. Verify this against the real chassis:
+    // a camera that actually looks out of the left side needs +13" of Y and a
+    // +90 deg yaw.
     public static final Transform3d kRobotToSideCamera = new Transform3d(
         new Translation3d(
             Units.inchesToMeters(-10),

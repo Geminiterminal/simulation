@@ -6,6 +6,7 @@ import edu.wpi.first.hal.FRCNetComm.tResourceType;
 import edu.wpi.first.hal.HAL;
 import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
@@ -22,6 +23,8 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.VecBuilder; // WPILib standard deviations
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 
 import com.studica.frc.AHRS;
@@ -43,7 +46,6 @@ import edu.wpi.first.math.geometry.Transform3d;
 
 import org.photonvision.PhotonCamera;
 import org.photonvision.PhotonPoseEstimator;
-import org.photonvision.PhotonPoseEstimator.PoseStrategy;
 
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
@@ -141,34 +143,58 @@ public class DriveSubsystem extends SubsystemBase {
           new Pose2d() // start at origin; you can override with resetOdometry
       );
 
- // === PhotonVision / AprilTag stuff ===
+  // === PhotonVision / AprilTag stuff ===
 
   // Camera and PhotonPoseEstimator ----------------------------
   // Names and transforms are shared with the vision simulation via
   // VisionConstants so the sim publishes frames to these exact cameras.
-  private final PhotonCamera m_oldLeftCamera = new PhotonCamera(VisionConstants.kBackCameraName); // now our back camera
-  private final PhotonCamera m_frontCamera = new PhotonCamera(VisionConstants.kSideCameraName); // actually side camera now
-  private final PhotonPoseEstimator m_oldLeftCameraEstimator;
-  private final PhotonPoseEstimator m_frontCameraEstimator;
+  // The camera names are the PhotonVision topic names ("FrontCamera" is the
+  // unit physically mounted at the rear of the robot).
+  private final PhotonCamera m_backCamera = new PhotonCamera(VisionConstants.kBackCameraName);
+  private final PhotonCamera m_sideCamera = new PhotonCamera(VisionConstants.kSideCameraName);
+  private final PhotonPoseEstimator m_backCameraEstimator;
+  private final PhotonPoseEstimator m_sideCameraEstimator;
 
   // Camera pose estimator ----------------------------------
   // transform for current back camera
-  private final Transform3d m_robotToCamera = VisionConstants.kRobotToBackCamera;
+  private final Transform3d m_robotToBackCamera = VisionConstants.kRobotToBackCamera;
 
   // transform for current side camera
-  private final Transform3d m_robotToFrontCamera = VisionConstants.kRobotToSideCamera;
+  private final Transform3d m_robotToSideCamera = VisionConstants.kRobotToSideCamera;
+
+  // Timestamp of the last frame handed to the fusion for each camera. The
+  // cameras publish at 30 fps while the robot loop runs at 50 Hz, so the same
+  // frame is seen more than once and must only be fused once.
+  private final Map<String, Double> m_lastFusedFrame = new HashMap<>();
+
+  /**
+   * Returns true if this frame has already been fused for this camera.
+   *
+   * @param cameraName the camera the frame came from
+   * @param timestampSeconds the frame's capture timestamp
+   * @return true if the frame is a repeat
+   */
+  private boolean isDuplicateFrame(String cameraName, double timestampSeconds) {
+    Double last = m_lastFusedFrame.get(cameraName);
+    if (last != null && Math.abs(last - timestampSeconds) < 1e-6) {
+      return true;
+    }
+    m_lastFusedFrame.put(cameraName, timestampSeconds);
+    return false;
+  }
 
   //------------------------------------------------------------------------------------------------------
 
   private boolean addPhotonVisionMeasurement() {
     // Do not short-circuit: each camera must get a chance to contribute every loop.
-    boolean oldLeftAccepted = fuseCameraMeasurement(
-        "GoodCamera_OldLeft", m_oldLeftCamera, m_oldLeftCameraEstimator);
-    boolean frontAccepted = fuseCameraMeasurement(
-        "FrontCamera", m_frontCamera, m_frontCameraEstimator);
-    SmartDashboard.putBoolean("Vision/GoodCamera_OldLeft Accepted", oldLeftAccepted);
-    SmartDashboard.putBoolean("Vision/FrontCamera Accepted", frontAccepted);
-    return oldLeftAccepted | frontAccepted;
+    boolean backAccepted = fuseCameraMeasurement(
+        VisionConstants.kBackCameraName, m_backCamera, m_backCameraEstimator);
+    boolean sideAccepted = fuseCameraMeasurement(
+        VisionConstants.kSideCameraName, m_sideCamera, m_sideCameraEstimator);
+    // The dashboard keys keep the PhotonVision camera names.
+    SmartDashboard.putBoolean("Vision/GoodCamera_OldLeft Accepted", sideAccepted);
+    SmartDashboard.putBoolean("Vision/FrontCamera Accepted", backAccepted);
+    return backAccepted | sideAccepted;
   }
 
   private boolean fuseCameraMeasurement(
@@ -178,13 +204,21 @@ public class DriveSubsystem extends SubsystemBase {
     // ---- THE SAFETY SHIELD ----
     if (!result.hasTargets()) return false;
 
+    // 0. FRAME DE-DUP: the cameras publish at 30 fps while the robot loop
+    //    runs at 50 Hz, so the same frame is handed to us more than once.
+    //    Fusing it twice would count one measurement twice.
+    if (isDuplicateFrame(cameraName, result.getTimestampSeconds())) return false;
+
     var best = result.getBestTarget();
 
     // 1. AMBIGUITY FILTER: Reject highly ambiguous frames
     if (best.getPoseAmbiguity() > 0.2 && best.getPoseAmbiguity() != -1) return false;
 
-    cameraEstimator.setReferencePose(getPose());
-    var estOpt = cameraEstimator.update(result);
+    // 2. POSE: pick the tag closest to where we think we are. (The old
+    //    PhotonPoseEstimator.update() did exactly this for the
+    //    CLOSEST_TO_REFERENCE_POSE strategy, using the reference pose set
+    //    with setReferencePose().)
+    var estOpt = cameraEstimator.estimateClosestToReferencePose(result, new Pose3d(getPose()));
     if (estOpt.isEmpty()) return false;
 
     var est = estOpt.get();
@@ -253,15 +287,16 @@ public class DriveSubsystem extends SubsystemBase {
       e.printStackTrace();
     }
 
-    m_oldLeftCameraEstimator = new PhotonPoseEstimator(
+    // PhotonVision 2026 deprecated the strategy-taking constructor and
+    // update(); the strategy is now selected by the estimation method that is
+    // called (estimateClosestToReferencePose below).
+    m_backCameraEstimator = new PhotonPoseEstimator(
       visionSystem.getTagLayout(),
-      PoseStrategy.CLOSEST_TO_REFERENCE_POSE,
-      m_robotToCamera
+      m_robotToBackCamera
     );
-    m_frontCameraEstimator = new PhotonPoseEstimator(
+    m_sideCameraEstimator = new PhotonPoseEstimator(
       visionSystem.getTagLayout(),
-      PoseStrategy.CLOSEST_TO_REFERENCE_POSE,
-      m_robotToFrontCamera
+      m_robotToSideCamera
     );
 
     // Prefer a trustworthy camera pose at startup. If none is available, seed
@@ -689,9 +724,9 @@ public class DriveSubsystem extends SubsystemBase {
   public boolean correctTranslationFromVision() {
       // Do not short-circuit, so either camera can provide the correction.
       return correctTranslationFromCamera(
-          "GoodCamera_OldLeft", m_oldLeftCamera, m_oldLeftCameraEstimator)
+          VisionConstants.kBackCameraName, m_backCamera, m_backCameraEstimator)
           | correctTranslationFromCamera(
-              "FrontCamera", m_frontCamera, m_frontCameraEstimator);
+              VisionConstants.kSideCameraName, m_sideCamera, m_sideCameraEstimator);
   }
 
   private boolean correctTranslationFromCamera(
@@ -710,8 +745,7 @@ public class DriveSubsystem extends SubsystemBase {
       double dist = best.getBestCameraToTarget().getTranslation().getNorm();
       if (!Double.isFinite(dist) || dist > 4.0 || dist < 0.22) return false;
 
-      cameraEstimator.setReferencePose(getPose());
-      var update = cameraEstimator.update(result);
+      var update = cameraEstimator.estimateClosestToReferencePose(result, new Pose3d(getPose()));
       if (update.isPresent()) {
           Pose2d visionPose = update.get().estimatedPose.toPose2d();
           if (!isFinite(visionPose)) return false;
