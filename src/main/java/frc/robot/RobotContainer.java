@@ -139,6 +139,7 @@ public class RobotContainer {
         autoChooser.addOption("Blue left", "Blue left");
         autoChooser.addOption("Blue right", "Blue right");
         autoChooser.addOption("y changes", "y changes");
+        autoChooser.addOption("x changes", "x changes");
         SmartDashboard.putData("Auto Chooser", autoChooser);
     }
 
