@@ -135,7 +135,7 @@ public class RobotContainer {
     NamedCommands.registerCommand("ShootForXseconds", new AutoAimAndShoot(m_robotDrive, shooter, intake, 20.0));
 
         autoChooser.setDefaultOption("Do Nothing", "NONE");
-        autoChooser.addOption("2m and turn", "2m and turn");
+        autoChooser.addOption("xy changes", "xy changes");
         autoChooser.addOption("Blue left", "Blue left");
         autoChooser.addOption("Blue right", "Blue right");
         autoChooser.addOption("y changes", "y changes");
