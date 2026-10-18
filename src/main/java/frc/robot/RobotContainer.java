@@ -48,12 +48,6 @@ public class RobotContainer {
 
     private static final double MANUAL_INTAKE_SPEED_DOWN = 0.2;
     private static final double MANUAL_INTAKE_SPEED_UP = 0.2;
-    private static final String AUTO_AIM_DISTANCE_IN_KEY = "Auto Aim Target Distance (in)";
-    private static final double AUTO_AIM_DEFAULT_DISTANCE_IN = 100.0;
-    private static final double AUTO_DISTANCE_KP = 1.0;
-    private static final double AUTO_DISTANCE_MAX_SPEED = 0.35;
-    private static final double AUTO_AIM_TOLERANCE_DEG = 2.0;
-    private static final double AUTO_DISTANCE_TOLERANCE_IN = 2.0;
     // Auto aim points the shooter/back side at the hub, so negative robot X moves closer.
     private static final double AUTO_DISTANCE_DIRECTION = -1.0;
 
@@ -95,7 +89,7 @@ public class RobotContainer {
         m_headingSnapPID.enableContinuousInput(-180.0, 180.0);
         m_headingSnapPID.setTolerance(2.0);
 
-        SmartDashboard.putNumber(AUTO_AIM_DISTANCE_IN_KEY, AUTO_AIM_DEFAULT_DISTANCE_IN);
+        AutoTuning.publishDefaults();
 
         // In simulation: give the camera sim the drivetrain's ground truth so
         // the PhotonVision fusion pipeline runs against synthetic AprilTag
@@ -291,6 +285,7 @@ public class RobotContainer {
     }
 
     private void runAutoAim() {
+        m_visionPID.setPID(AutoTuning.aimHeadingP(), 0.0, 0.0);
         double rot = m_visionPID.calculate(
             m_robotDrive.getPose().getRotation().getDegrees(),
             m_robotDrive.getAngleToHub());
@@ -308,16 +303,17 @@ public class RobotContainer {
             180.0);
 
         SmartDashboard.putNumber("Auto Aim Error (deg)", headingError);
-        isAutoAimFinished = Math.abs(headingError) <= AUTO_AIM_TOLERANCE_DEG;
+        isAutoAimFinished = Math.abs(headingError) <= AutoTuning.aimHeadingToleranceDeg();
         return isAutoAimFinished;
     }
 
     private void runAutoDistance() {
         double distanceError = getAutoDistanceErrorMeters();
+        double maxSpeed = AutoTuning.aimDistanceMaxSpeed();
         double autoSpeed = AUTO_DISTANCE_DIRECTION * MathUtil.clamp(
-            distanceError * AUTO_DISTANCE_KP,
-            -AUTO_DISTANCE_MAX_SPEED,
-            AUTO_DISTANCE_MAX_SPEED);
+            distanceError * AutoTuning.aimDistanceKp(),
+            -maxSpeed,
+            maxSpeed);
 
         SmartDashboard.putNumber("Auto Distance Error (m)", distanceError);
         SmartDashboard.putNumber("Auto Distance Speed", autoSpeed);
@@ -330,12 +326,12 @@ public class RobotContainer {
 
     private boolean isAutoDistanceFinished() {
         isAutoDistanceFinished =
-            Math.abs(getAutoDistanceErrorMeters()) <= Units.inchesToMeters(AUTO_DISTANCE_TOLERANCE_IN);
+            Math.abs(getAutoDistanceErrorMeters()) <= AutoTuning.aimDistanceToleranceMeters();
         return isAutoDistanceFinished;
     }
 
     private double getAutoDistanceErrorMeters() {
-        double targetDistanceInches = SmartDashboard.getNumber(AUTO_AIM_DISTANCE_IN_KEY, AUTO_AIM_DEFAULT_DISTANCE_IN);
+        double targetDistanceInches = AutoTuning.aimTargetDistanceInches();
         double targetDistanceMeters = Units.inchesToMeters(targetDistanceInches);
 
         Translation2d robotToHub = m_robotDrive.getHubLocation().minus(m_robotDrive.getPose().getTranslation());
@@ -391,10 +387,10 @@ public class RobotContainer {
             return Commands.none();
         }
         PathConstraints constraints = new PathConstraints(
-            2.0,
-            2.0,
-            Units.degreesToRadians(360),
-            Units.degreesToRadians(540)
+            AutoTuning.pathMaxSpeed(),
+            AutoTuning.pathMaxAcceleration(),
+            AutoTuning.pathMaxAngularSpeedRadPerSec(),
+            AutoTuning.pathMaxAngularAccelerationRadPerSecSq()
         );
 
         try {

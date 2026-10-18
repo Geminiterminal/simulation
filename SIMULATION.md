@@ -84,6 +84,80 @@ The simulated driver station is kept in sync with the robot, so
 using. On the real robot the alliance comes from the FMS and cannot be
 changed - the toggle and the chooser are simulation-only.
 
+## Autonomous path tuning in Elastic Dashboard
+
+The robot publishes its SmartDashboard/NetworkTables entries, which Elastic
+Dashboard can display and edit. In Elastic, add a NetworkTables widget (or use
+the data browser) and select the entries under `SmartDashboard/Auto Tuning`.
+The path-following gains and auto-aim values are read live; edits take effect
+while a command is running. Pathfind constraints are read when the next
+pathfind command is created. No source edit or redeploy is required. Keep the
+robot disabled or run in simulation while experimenting, and change one value
+at a time.
+
+### Values to tune
+
+| Elastic entry | What it changes | Practical tuning approach |
+|---|---|---|
+| `Path Translation kP` | X/Y pose-error feedback in m/s per meter of error | Increase gradually if the robot trails the target; reduce if it oscillates or overshoots. |
+| `Path Translation kI` | Removes persistent translation bias | Leave at 0 initially. Add only a small amount if a steady error remains after P tuning. |
+| `Path Translation kD` | Damps translation error changes | Usually leave at 0 unless repeated overshoot remains; simulation encoders are clean, real sensors are noisier. |
+| `Path Rotation kP` | Heading-error feedback in rad/s per radian of error | Increase if heading lags; reduce if it swings past the target. |
+| `Path Rotation kI`, `Path Rotation kD` | Integral/derivative heading correction | Start at 0; tune only after P. |
+| `Max Module Speed (mps)` | Runtime swerve-wheel speed desaturation limit | Keep at or below the measured/mechanically safe wheel limit. Lower it to reduce overall aggressiveness. |
+| `Pathfind Max Speed (mps)`, `Pathfind Max Accel (mps2)` | Constraints for the trench pathfind commands | Reduce for smoother approaches; increase cautiously if motion is consistently too slow. Applies to newly scheduled pathfinds. |
+| `Pathfind Max Angular Speed (degps)`, `Pathfind Max Angular Accel (degps2)` | Angular constraints for those pathfind commands | Lower if turns are abrupt; increase only if the robot can track the resulting rotation. |
+| `Aim Heading kP`, `Aim Heading Tolerance (deg)` | Hub-facing auto-aim response and finish threshold | Adjust only when tuning auto-aim; avoid changing while evaluating path-following. |
+| `Aim Distance kP`, `Aim Distance Max Speed (mps)`, `Aim Distance Tolerance (in)` | Auto-drive-to-shoot-distance behavior | Raise P for quicker approach, lower max speed for gentler approach; set tolerance to the acceptable shooting range. |
+| `Auto Aim Target Distance (in)` | Desired distance from robot to hub | Set to the geometry required by the shot. |
+
+The path PID defaults are 2.5 (translation) and 4.0 (rotation), with I and D
+at zero. Constraints entered in Elastic override the runtime pathfind commands
+and the module desaturation limit. **Normal PathPlanner autos use constraints
+embedded in each `.path`/`.auto` asset**, so change those route limits in the
+PathPlanner GUI and re-export when the authored trajectory itself needs a new
+speed or acceleration profile. The dashboard `Max Module Speed` still caps
+wheel outputs for those autos.
+
+### Useful live telemetry
+
+Use Elastic line graphs for these signals (and retain the NetworkTables/WPILib
+DataLog for run-to-run comparison):
+
+- `Auto/Target Pose X (m)`, `Auto/Target Pose Y (m)`, `Auto/Target Heading (deg)`
+  against `Robot X (m)`, `Robot Y (m)`, and `Robot Heading (deg)`. `Auto/Translation
+  Error X/Y` and `Auto/Heading Error` show signed tracking error directly.
+- `Auto/Commanded Vx/Vy/Omega` against `Auto/Measured Vx/Vy/Omega`. Large or
+  sustained command/measurement gaps indicate saturation, a speed constraint,
+  or actuator response rather than a path geometry problem.
+- In simulation, `Sim/Ground Truth X/Y/Heading` and `Sim/Pose Estimate Error
+  X/Y/Heading` separate controller/physics error from pose-estimator/vision
+  error. Also inspect `Vision Active` and `Field Heading Source` before blaming
+a controller gain for an incorrect field pose.
+- For shoot-approach tuning, watch `Auto Distance Error (m)`, `Auto Distance
+  Speed`, `Distance to Hub (m)`, and `Auto Aim Error (deg)`. Check battery voltage
+  and module current when motion is unexpectedly slow.
+
+### Repeatable trial-and-error loop
+
+1. Start with a short, representative path at low speed. Confirm the field
+   heading, start pose, alliance mirroring, and pose estimate are correct.
+2. Compare target pose to estimated pose. If estimate-to-ground-truth is poor,
+   fix odometry, gyro, camera, or module calibration first; PID tuning cannot
+   compensate for bad state estimation.
+3. Increase only translation P (or rotation P for heading error) in small steps
+   until lag improves; back off if oscillation/overshoot appears. Keep I and D
+   at zero at first.
+4. If commanded speed is high but measured speed stays low, reduce path speed or
+   acceleration and check module/battery telemetry before raising feedback gain.
+5. Repeat the exact path and starting conditions, then compare peak and RMS
+   translation/heading error, settling time, and end pose. Save known-good
+   values outside the live dashboard before another trial.
+
+The dashboard entries are bounded in code to avoid accidental extreme values.
+Dashboard edits are runtime tuning only; they do not update PathPlanner asset
+files or replace physical system identification.
+
 ## Calibration data
 
 All physics constants live in `Constants.SimulationConstants`; camera metadata
