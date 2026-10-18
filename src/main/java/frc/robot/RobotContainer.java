@@ -137,7 +137,8 @@ public class RobotContainer {
         autoChooser.setDefaultOption("Do Nothing", "NONE");
         autoChooser.addOption("2m and turn", "2m and turn");
         autoChooser.addOption("Blue left", "Blue left");
-        autoChooser.addOption("Blue right", "blue right");
+        autoChooser.addOption("Blue right", "Blue right");
+        autoChooser.addOption("y changes", "y changes");
         SmartDashboard.putData("Auto Chooser", autoChooser);
     }
 
