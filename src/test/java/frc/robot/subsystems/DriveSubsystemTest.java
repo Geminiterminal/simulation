@@ -1,14 +1,18 @@
 package frc.robot.subsystems;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
+import edu.wpi.first.math.geometry.Twist2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj.DriverStation;
 import frc.robot.Constants.DriveConstants;
 import frc.robot.Constants.FieldConstants;
+import frc.robot.Constants.ModuleConstants;
+import frc.robot.Constants.SimulationConstants;
 import org.junit.jupiter.api.Test;
 
 class DriveSubsystemTest {
@@ -52,6 +56,57 @@ class DriveSubsystemTest {
           actual.vxMetersPerSecond, EPSILON);
       assertEquals(0.0, actual.vyMetersPerSecond, EPSILON);
     }
+  }
+
+  @Test
+  void discretizationPreservesTheRequestedRobotRelativePoseOverOneLoop() {
+    double dt = SimulationConstants.kLoopPeriodSeconds;
+    ChassisSpeeds requested = new ChassisSpeeds(1.2, -0.4, 2.7);
+    ChassisSpeeds discrete = ChassisSpeeds.discretize(requested, dt);
+
+    Pose2d requestedDelta = new Pose2d(
+        requested.vxMetersPerSecond * dt,
+        requested.vyMetersPerSecond * dt,
+        Rotation2d.fromRadians(requested.omegaRadiansPerSecond * dt));
+    Pose2d achievedDelta = new Pose2d().exp(new Twist2d(
+        discrete.vxMetersPerSecond * dt,
+        discrete.vyMetersPerSecond * dt,
+        discrete.omegaRadiansPerSecond * dt));
+
+    assertEquals(requestedDelta.getX(), achievedDelta.getX(), 1e-9);
+    assertEquals(requestedDelta.getY(), achievedDelta.getY(), 1e-9);
+    assertEquals(requestedDelta.getRotation().getRadians(),
+        achievedDelta.getRotation().getRadians(), 1e-9);
+  }
+
+  @Test
+  void driveSimulationConvertsWheelRateToMotorRpmBeforeEncoderScaling() {
+    double wheelRadPerSecond = 7.5;
+    double motorRpm = MAXSwerveModule.mechanismRadiansPerSecondToMotorRpm(
+        wheelRadPerSecond, SimulationConstants.kDriveGearRatio);
+    double configuredEncoderMetersPerSecond = motorRpm
+        * (ModuleConstants.kWheelDiameterMeters * Math.PI
+            / SimulationConstants.kDriveGearRatio / 60.0);
+
+    assertEquals(wheelRadPerSecond * SimulationConstants.kWheelRadiusMeters,
+        configuredEncoderMetersPerSecond, EPSILON);
+  }
+
+  @Test
+  void steeringSimulationModelsReverseGearAndOutputAbsoluteEncoder() {
+    double moduleRateRadPerSecond = 1.2;
+    // MAXSwerve reverses the steering output. The SPARK encoder config also
+    // inverts this raw through-bore signal to yield the WPILib module angle.
+    double mechanismRateRadPerSecond = -moduleRateRadPerSecond;
+    double motorRpm = MAXSwerveModule.mechanismRadiansPerSecondToMotorRpm(
+        mechanismRateRadPerSecond, -SimulationConstants.kTurnGearRatio);
+    double absoluteEncoderRawRpm =
+        MAXSwerveModule.radiansPerSecondToRpm(mechanismRateRadPerSecond);
+    double absoluteEncoderReportedRateRadPerSecond =
+        -absoluteEncoderRawRpm * (2.0 * Math.PI / 60.0);
+
+    assertTrue(motorRpm > 0.0, "positive module motion requires positive motor RPM");
+    assertEquals(moduleRateRadPerSecond, absoluteEncoderReportedRateRadPerSecond, EPSILON);
   }
 
   @Test
