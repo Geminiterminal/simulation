@@ -27,6 +27,7 @@ import java.util.Optional;
 import com.studica.frc.AHRS;
 import com.studica.frc.AHRS.NavXComType;
 
+import frc.robot.AutoTuning;
 import frc.robot.Constants.DriveConstants;
 import frc.robot.Constants.FieldConstants;
 import frc.robot.Constants.SimulationConstants;
@@ -37,6 +38,7 @@ import com.pathplanner.lib.config.PIDConstants;
 import com.pathplanner.lib.config.RobotConfig;
 import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.util.PathPlannerLogging;
 
 import edu.wpi.first.math.estimator.SwerveDrivePoseEstimator;
 import edu.wpi.first.math.geometry.Transform3d;
@@ -48,6 +50,11 @@ import org.photonvision.PhotonPoseEstimator.PoseStrategy;
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
       "PathPlanner Commanded Omega (rad/s)";
+  private final PIDController m_pathXFeedback = new PIDController(2.5, 0.0, 0.0);
+  private final PIDController m_pathYFeedback = new PIDController(2.5, 0.0, 0.0);
+  private final PIDController m_pathRotationFeedback = new PIDController(4.0, 0.0, 0.0);
+  private Pose2d m_pathTargetPose;
+  private boolean m_isFollowingPath = false;
 
   // Create MAXSwerveModules
   private final MAXSwerveModule m_frontLeft = new MAXSwerveModule(
@@ -282,8 +289,8 @@ public class DriveSubsystem extends SubsystemBase {
             this::getRobotRelativeSpeeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
             this::driveRobotRelative,      // Consumer<ChassisSpeeds> for output
             new PPHolonomicDriveController( // PPHolonomicController is the built in path following controller for holonomic drive trains
-                    new PIDConstants(0.01, 0.0, 0.0), // Translation PID constants
-                    new PIDConstants(0.01, 0.0, 0.0) // Rotation PID constants
+                    new PIDConstants(0.0, 0.0, 0.0), // Feedback is supplied by live dashboard-tuned PIDs below
+                    new PIDConstants(0.0, 0.0, 0.0)
             ),
             config, // The robot configuration
             () -> {
@@ -297,6 +304,25 @@ public class DriveSubsystem extends SubsystemBase {
     );
     }
     
+    // PathPlanner's feedback callbacks let the PID gains be changed live from
+    // Elastic without rebuilding AutoBuilder. Feed-forward from the authored
+    // trajectory remains PathPlanner's responsibility; these controllers add
+    // field-relative pose-error correction.
+    m_pathRotationFeedback.enableContinuousInput(-Math.PI, Math.PI);
+    PPHolonomicDriveController.overrideXYFeedback(
+        this::calculatePathXFeedback, this::calculatePathYFeedback);
+    PPHolonomicDriveController.overrideRotationFeedback(this::calculatePathRotationFeedback);
+    PathPlannerLogging.setLogTargetPoseCallback(pose -> m_pathTargetPose = pose);
+    PathPlannerLogging.setLogActivePathCallback(poses -> {
+      m_isFollowingPath = !poses.isEmpty();
+      if (!m_isFollowingPath) m_pathTargetPose = null;
+    });
+    PathPlannerLogging.setLogCurrentPoseCallback(pose -> {
+      SmartDashboard.putNumber("Auto/Current Pose X (m)", pose.getX());
+      SmartDashboard.putNumber("Auto/Current Pose Y (m)", pose.getY());
+      SmartDashboard.putNumber("Auto/Current Heading (deg)", pose.getRotation().getDegrees());
+    });
+
     // THE SECRET SAUCE: Tell PathPlanner to check our override method before rotating
     PPHolonomicDriveController.setRotationTargetOverride(this::getRotationTargetOverride);
 
@@ -305,6 +331,36 @@ public class DriveSubsystem extends SubsystemBase {
     if (m_isSim) {
       SmartDashboard.putData("Field", m_simField);
     }
+  }
+
+  private void updatePathFeedbackGains() {
+    double kp = AutoTuning.translationP();
+    double ki = AutoTuning.translationI();
+    double kd = AutoTuning.translationD();
+    m_pathXFeedback.setPID(kp, ki, kd);
+    m_pathYFeedback.setPID(kp, ki, kd);
+    m_pathRotationFeedback.setPID(
+        AutoTuning.rotationP(), AutoTuning.rotationI(), AutoTuning.rotationD());
+  }
+
+  private double calculatePathXFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    return m_pathXFeedback.calculate(getPose().getX(), m_pathTargetPose.getX());
+  }
+
+  private double calculatePathYFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    return m_pathYFeedback.calculate(getPose().getY(), m_pathTargetPose.getY());
+  }
+
+  private double calculatePathRotationFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    Rotation2d targetHeading = getRotationTargetOverride().orElse(m_pathTargetPose.getRotation());
+    return m_pathRotationFeedback.calculate(
+        getPose().getRotation().getRadians(), targetHeading.getRadians());
   }
 
   private static final double kHeadingToleranceDeg = 2.0;
@@ -353,6 +409,22 @@ public class DriveSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Robot X (m)", getPose().getX());
     SmartDashboard.putNumber("Robot Y (m)", getPose().getY());
     SmartDashboard.putNumber("Robot Heading (deg)", getPose().getRotation().getDegrees());
+
+    ChassisSpeeds measuredRobotSpeeds = getRobotRelativeSpeeds();
+    SmartDashboard.putNumber("Auto/Measured Vx (mps)", measuredRobotSpeeds.vxMetersPerSecond);
+    SmartDashboard.putNumber("Auto/Measured Vy (mps)", measuredRobotSpeeds.vyMetersPerSecond);
+    SmartDashboard.putNumber("Auto/Measured Omega (radps)", measuredRobotSpeeds.omegaRadiansPerSecond);
+    SmartDashboard.putBoolean("Auto/Following Path", m_isFollowingPath);
+    if (m_isFollowingPath && m_pathTargetPose != null) {
+      SmartDashboard.putNumber("Auto/Target Pose X (m)", m_pathTargetPose.getX());
+      SmartDashboard.putNumber("Auto/Target Pose Y (m)", m_pathTargetPose.getY());
+      SmartDashboard.putNumber("Auto/Target Heading (deg)", m_pathTargetPose.getRotation().getDegrees());
+      SmartDashboard.putNumber("Auto/Translation Error X (m)", m_pathTargetPose.getX() - getPose().getX());
+      SmartDashboard.putNumber("Auto/Translation Error Y (m)", m_pathTargetPose.getY() - getPose().getY());
+      SmartDashboard.putNumber("Auto/Heading Error (deg)", MathUtil.inputModulus(
+          m_pathTargetPose.getRotation().getDegrees() - getPose().getRotation().getDegrees(),
+          -180.0, 180.0));
+    }
 
     // Gyro data
     if (!m_isSim) {
@@ -595,6 +667,9 @@ public class DriveSubsystem extends SubsystemBase {
     // measured or subsequently limited value.
     SmartDashboard.putNumber(
         PATHPLANNER_COMMANDED_OMEGA_KEY, speeds.omegaRadiansPerSecond);
+    SmartDashboard.putNumber("Auto/Commanded Vx (mps)", speeds.vxMetersPerSecond);
+    SmartDashboard.putNumber("Auto/Commanded Vy (mps)", speeds.vyMetersPerSecond);
+    SmartDashboard.putNumber("Auto/Commanded Omega (radps)", speeds.omegaRadiansPerSecond);
 
     // Convert chassis speeds to module states
     SwerveModuleState[] states =
@@ -602,7 +677,7 @@ public class DriveSubsystem extends SubsystemBase {
 
     // Desaturate to respect max speed
     SwerveDriveKinematics.desaturateWheelSpeeds(
-        states, DriveConstants.kMaxSpeedMetersPerSecond);
+        states, AutoTuning.maxModuleSpeed());
 
     // Apply to modules
     m_frontLeft.setDesiredState(states[0]);
@@ -827,6 +902,11 @@ public class DriveSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Sim/Ground Truth X (m)", m_simRobotPose.getX());
     SmartDashboard.putNumber("Sim/Ground Truth Y (m)", m_simRobotPose.getY());
     SmartDashboard.putNumber("Sim/Ground Truth Heading (deg)", m_simRobotPose.getRotation().getDegrees());
+    SmartDashboard.putNumber("Sim/Pose Estimate Error X (m)", getPose().getX() - m_simRobotPose.getX());
+    SmartDashboard.putNumber("Sim/Pose Estimate Error Y (m)", getPose().getY() - m_simRobotPose.getY());
+    SmartDashboard.putNumber("Sim/Pose Estimate Error Heading (deg)", MathUtil.inputModulus(
+        getPose().getRotation().getDegrees() - m_simRobotPose.getRotation().getDegrees(),
+        -180.0, 180.0));
   }
 
   /**
