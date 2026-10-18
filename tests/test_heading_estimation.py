@@ -241,16 +241,36 @@ class VisionFusion:
     K_AMBIGUITY_PENALTY = 2.0
     K_DISTANCE_PENALTY_METERS = 3.0
     K_MULTI_TAG_BONUS = 0.6
+    K_SINGLE_TAG_HEADING_PENALTY = 50.0
+    FUSION_TIMESTAMP_EPSILON_SECONDS = 1e-6
+    K_MAX_TRANSLATION_INNOVATION_METERS = 0.20
+    K_MAX_HEADING_INNOVATION_DEGREES = 2.0
+    K_VISION_LOCALIZATION_TOLERANCE_METERS = 0.75
 
     def __init__(self):
         self._last_processed_frame = {}
+        self._last_fusion_timestamp = -math.inf
 
     def should_process_frame(self, camera_name, timestamp_seconds):
+        if not math.isfinite(timestamp_seconds):
+            return False
         last = self._last_processed_frame.get(camera_name)
-        if last is not None and abs(last - timestamp_seconds) < 1e-6:
+        if last is not None and abs(last - timestamp_seconds) < self.FUSION_TIMESTAMP_EPSILON_SECONDS:
             return False
         self._last_processed_frame[camera_name] = timestamp_seconds
         return True
+
+    def is_fusion_timestamp_in_order(self, timestamp_seconds):
+        return math.isfinite(timestamp_seconds) and (
+            timestamp_seconds > self._last_fusion_timestamp + self.FUSION_TIMESTAMP_EPSILON_SECONDS
+        )
+
+    def record_fusion_timestamp(self, timestamp_seconds):
+        if math.isfinite(timestamp_seconds):
+            self._last_fusion_timestamp = max(self._last_fusion_timestamp, timestamp_seconds)
+
+    def reset_fusion_timestamp(self, timestamp_seconds):
+        self._last_fusion_timestamp = timestamp_seconds if math.isfinite(timestamp_seconds) else -math.inf
 
     @classmethod
     def is_frame_acceptable(cls, pose_ambiguity, camera_to_tag_distance_meters):
@@ -268,12 +288,40 @@ class VisionFusion:
 
     @classmethod
     def is_consistent_with_estimate(cls, estimated_heading_deg, measured_heading_deg, translation_delta):
-        if not math.isfinite(translation_delta):
-            return False
-        if translation_delta > cls.K_MAX_VISION_TRANSLATION_METERS:
-            return False
+        return cls.is_translation_consistent_with_estimate(translation_delta) and (
+            cls.is_heading_consistent_with_estimate(estimated_heading_deg, measured_heading_deg)
+        )
+
+    @classmethod
+    def is_translation_consistent_with_estimate(cls, translation_delta):
+        return math.isfinite(translation_delta) and translation_delta <= cls.K_MAX_VISION_TRANSLATION_METERS
+
+    @classmethod
+    def is_heading_consistent_with_estimate(cls, estimated_heading_deg, measured_heading_deg):
         heading_delta = abs(wrap_degrees(measured_heading_deg - estimated_heading_deg))
         return math.isfinite(heading_delta) and heading_delta <= cls.K_MAX_VISION_HEADING_DEGREES
+
+    @classmethod
+    def limit_measurement_innovation(
+        cls, estimated_x, estimated_y, estimated_heading_deg, measured_x, measured_y, measured_heading_deg
+    ):
+        dx = measured_x - estimated_x
+        dy = measured_y - estimated_y
+        distance = math.hypot(dx, dy)
+        if distance > cls.K_MAX_TRANSLATION_INNOVATION_METERS:
+            scale = cls.K_MAX_TRANSLATION_INNOVATION_METERS / distance
+            dx *= scale
+            dy *= scale
+        heading_delta = wrap_degrees(measured_heading_deg - estimated_heading_deg)
+        heading_delta = max(
+            -cls.K_MAX_HEADING_INNOVATION_DEGREES,
+            min(cls.K_MAX_HEADING_INNOVATION_DEGREES, heading_delta),
+        )
+        return (
+            estimated_x + dx,
+            estimated_y + dy,
+            estimated_heading_deg + heading_delta,
+        )
 
     @classmethod
     def measurement_std_devs(cls, targets_used, pose_ambiguity, distance, multi_tag):
@@ -282,10 +330,15 @@ class VisionFusion:
         quality = (1.0 + cls.K_AMBIGUITY_PENALTY * ambiguity) * (
             1.0 + distance / cls.K_DISTANCE_PENALTY_METERS
         )
-        tag_strength = cls.K_MULTI_TAG_BONUS if (multi_tag or targets_used >= 2) else 1.0
-        scale = quality * tag_strength
-        pos = cls.K_BASE_POSITION_STD_DEV_METERS * scale
-        return (pos, pos, cls.K_BASE_HEADING_STD_DEV_RADIANS * scale)
+        has_multi_tag_evidence = multi_tag or targets_used >= 2
+        position_scale = quality * (cls.K_MULTI_TAG_BONUS if has_multi_tag_evidence else 1.0)
+        heading_scale = quality * (
+            cls.K_MULTI_TAG_BONUS
+            if has_multi_tag_evidence
+            else cls.K_SINGLE_TAG_HEADING_PENALTY
+        )
+        pos = cls.K_BASE_POSITION_STD_DEV_METERS * position_scale
+        return (pos, pos, cls.K_BASE_HEADING_STD_DEV_RADIANS * heading_scale)
 
 
 class SimulatedGyro:
@@ -341,6 +394,7 @@ class Harness:
         self.time = 0.0
         self.next_vision_time = 0.1
         self.seeded = True
+        self.heading_seeded = True
         self.history = [(0.0, initial_pose)]
         self.vision_noise = random.Random(4242)
 
@@ -375,6 +429,11 @@ class Harness:
             while self.time >= self.next_vision_time:
                 self.fuse_vision_frame(self.next_vision_time - VISION_LATENCY)
                 self.next_vision_time += VISION_PERIOD
+        else:
+            # A vision outage produces no queued captures; do not replay old
+            # frames after the camera comes back.
+            while self.time >= self.next_vision_time:
+                self.next_vision_time += VISION_PERIOD
         return Step(self.time, self.truth, estimate)
 
     # -- vision fusion (exact DriveSubsystem policy) ------------------------
@@ -391,25 +450,60 @@ class Harness:
                 + math.radians(self.vision_noise.gauss(0.0, heading_noise))
             ),
         )
+        self.fuse_vision_measurement(capture_time, measurement, self.TARGETS_USED, self.AMBIGUITY)
 
+    def fuse_vision_measurement(self, capture_time, measurement, targets_used, ambiguity):
         if not self.fusion.should_process_frame("sim-cam", capture_time):
             return
-        if not VisionFusion.is_frame_acceptable(self.AMBIGUITY, self.TAG_DISTANCE):
+        if not self.fusion.is_fusion_timestamp_in_order(capture_time):
             return
-        if not self.seeded:
-            self.estimator.reset_position(self.gyro.angle_radians, measurement)
-            self.seeded = True
+        if not VisionFusion.is_frame_acceptable(ambiguity, self.TAG_DISTANCE):
             return
-        if not VisionFusion.is_consistent_with_estimate(
-            math.degrees(self.estimator.pose.theta),
-            math.degrees(measurement.theta),
-            self.estimator.pose.distance_to(measurement),
+
+        estimate_at_capture = self.estimator._compensated_sample_at(capture_time)
+        if estimate_at_capture is None:
+            return
+        translation_delta = estimate_at_capture.distance_to(measurement)
+        estimated_heading = math.degrees(estimate_at_capture.theta)
+        measured_heading = math.degrees(measurement.theta)
+        if self.seeded and not VisionFusion.is_translation_consistent_with_estimate(translation_delta):
+            return
+        if self.heading_seeded and not VisionFusion.is_heading_consistent_with_estimate(
+            estimated_heading, measured_heading
         ):
             return
-        stddevs = VisionFusion.measurement_std_devs(
-            self.TARGETS_USED, self.AMBIGUITY, self.TAG_DISTANCE, multi_tag
+
+        bounded = VisionFusion.limit_measurement_innovation(
+            estimate_at_capture.x,
+            estimate_at_capture.y,
+            estimated_heading,
+            measurement.x,
+            measurement.y,
+            measured_heading,
         )
-        self.estimator.add_vision_measurement(measurement, capture_time, stddevs)
+        smooth_measurement = Pose2d(bounded[0], bounded[1], math.radians(bounded[2]))
+        multi_tag = targets_used >= 2
+        stddevs = VisionFusion.measurement_std_devs(
+            targets_used, ambiguity, self.TAG_DISTANCE, multi_tag
+        )
+        self.estimator.add_vision_measurement(smooth_measurement, capture_time, stddevs)
+        self.fusion.record_fusion_timestamp(capture_time)
+
+        fused_at_capture = self.estimator._compensated_sample_at(capture_time) or estimate_at_capture
+        if (
+            not self.seeded
+            and fused_at_capture.distance_to(measurement)
+            <= VisionFusion.K_VISION_LOCALIZATION_TOLERANCE_METERS
+        ):
+            self.seeded = True
+        if (
+            not self.heading_seeded
+            and multi_tag
+            and VisionFusion.is_heading_consistent_with_estimate(
+                math.degrees(fused_at_capture.theta), measured_heading
+            )
+        ):
+            self.heading_seeded = True
 
 
 def heading_error_degrees(step):
@@ -548,6 +642,66 @@ class HeadingFusionScenariosTest(unittest.TestCase):
         self.assertNotEqual(before_first, after_first, "first copy of the frame must be fused")
         self.assertEqual(after_first, after_second, "duplicate frame must not move the pose again")
 
+    def test_single_tag_heading_flicker_only_nudges_the_pose(self):
+        start = Pose2d(1.0, 2.0, math.radians(179.0))
+        harness = Harness(gyro_drift=0.0, initial_pose=start)
+        max_heading_step = 0.0
+        max_translation_step = 0.0
+
+        for i in range(100):
+            harness.step(0.0, 0.0, 0.0, vision_enabled=False)
+            if i < 4 or i % 3 != 0:
+                continue
+
+            # Vision visibility flickers between frames, and single-tag PNP
+            # alternates between nearby but noisy heading/position solutions.
+            measured_heading = 140.0 if (i // 3) % 2 else -179.0
+            measurement = Pose2d(start.x, start.y, math.radians(measured_heading))
+            before = harness.estimator.pose
+            harness.fuse_vision_measurement(
+                harness.time - VISION_LATENCY, measurement, targets_used=1, ambiguity=0.05
+            )
+            after = harness.estimator.pose
+            max_heading_step = max(
+                max_heading_step,
+                abs(wrap_degrees(math.degrees(after.theta - before.theta))),
+            )
+            max_translation_step = max(max_translation_step, before.distance_to(after))
+
+        self.assertLess(max_heading_step, 1.5, f"single-tag heading flicker moved {max_heading_step:.2f} deg")
+        self.assertLess(max_translation_step, 0.05, f"heading-only flicker moved pose {max_translation_step:.2f} m")
+        self.assertLess(
+            abs(wrap_degrees(math.degrees(harness.estimator.pose.theta - start.theta))),
+            8.0,
+            "noisy intermittent single-tag data pulled heading too far from its smooth prior",
+        )
+
+    def test_single_tag_translation_flicker_is_smoothed(self):
+        start = Pose2d(1.0, 2.0, 0.0)
+        harness = Harness(gyro_drift=0.0, initial_pose=start)
+        max_translation_step = 0.0
+
+        for i in range(100):
+            harness.step(0.0, 0.0, 0.0, vision_enabled=False)
+            if i < 4 or i % 3 != 0:
+                continue
+            sign = 1.0 if (i // 3) % 2 else -1.0
+            measurement = Pose2d(
+                start.x + sign * 0.12,
+                start.y - sign * 0.10,
+                math.radians(sign * 2.0),
+            )
+            before = harness.estimator.pose
+            harness.fuse_vision_measurement(
+                harness.time - VISION_LATENCY, measurement, targets_used=1, ambiguity=0.05
+            )
+            max_translation_step = max(
+                max_translation_step, before.distance_to(harness.estimator.pose)
+            )
+
+        self.assertLess(max_translation_step, 0.15)
+        self.assertLess(harness.estimator.pose.distance_to(start), 0.2)
+
     def test_vision_is_latency_compensated_while_turning(self):
         # Turn in place at 90 deg/s: a measurement applied 30 ms late would be
         # wrong by 2.7 deg of heading every frame. Capture-stamped fusion keeps
@@ -563,24 +717,53 @@ class HeadingFusionScenariosTest(unittest.TestCase):
 
 
 class SeedingTest(unittest.TestCase):
-    def test_first_good_frame_seeds_and_later_frames_fuse(self):
+    def test_first_good_frame_localizes_smoothly_without_snapping_heading(self):
         harness = Harness()
+        startup_prior = Pose2d(0.0, 0.0, 0.0)
+        harness.truth = Pose2d(4.0, 3.0, 0.0)
+        harness.gyro.reset_to(0.0)
+        harness.estimator = PoseEstimator(startup_prior, harness.gyro.angle_radians)
+        harness.fusion.reset_fusion_timestamp(0.0)
         harness.seeded = False
-        harness.estimator = PoseEstimator(Pose2d(0.0, 0.0, math.radians(180.0)), math.radians(180.0))
-        harness.truth = Pose2d(4.0, 3.0, math.radians(42.0))
-        harness.gyro.reset_to(42.0)
+        harness.heading_seeded = False
         harness.history = [(0.0, harness.truth)]
-        harness.time = 0.2
 
-        harness.fuse_vision_frame(0.2 - VISION_LATENCY)
-        self.assertTrue(harness.seeded)
+        # Build the estimator's timestamp buffer before the first camera frame.
+        for _ in range(5):
+            harness.step(0.0, 0.0, 0.0, vision_enabled=False)
+        prior = harness.estimator.pose
+        harness.fuse_vision_frame(harness.time - VISION_LATENCY)
+        first = harness.estimator.pose
+
         self.assertLess(
-            abs(wrap_degrees(math.degrees(harness.estimator.pose.theta - harness.truth.theta))),
-            5.0,
-            "seed must establish the vision pose",
+            math.hypot(first.x - prior.x, first.y - prior.y),
+            VisionFusion.K_MAX_TRANSLATION_INNOVATION_METERS,
+        )
+        self.assertLess(
+            abs(wrap_degrees(math.degrees(first.theta - prior.theta))),
+            3.0,
+            "the first camera frame must not snap the alliance heading",
         )
 
-        # A wildly wrong frame afterwards must be rejected by the outlier gate.
+        max_heading_step = 0.0
+        previous = first
+        for _ in range(300):
+            last = harness.step(0.0, 0.0, 0.0)
+            max_heading_step = max(
+                max_heading_step,
+                abs(wrap_degrees(math.degrees(last.estimate.theta - previous.theta))),
+            )
+            previous = last.estimate
+        self.assertTrue(harness.seeded, "vision translation did not converge")
+        self.assertTrue(harness.heading_seeded, "multi-tag heading did not converge")
+        self.assertLess(max_heading_step, 2.0, "heading correction was not gradual")
+        self.assertLess(harness.estimator.pose.distance_to(harness.truth), 0.5)
+        self.assertLess(
+            abs(wrap_degrees(math.degrees(harness.estimator.pose.theta - harness.truth.theta))),
+            3.0,
+        )
+
+        # A wildly wrong frame afterwards must still be rejected by the outlier gate.
         bogus = Pose2d(harness.truth.x + 4.0, harness.truth.y, math.radians(120.0))
         self.assertFalse(
             VisionFusion.is_consistent_with_estimate(
@@ -605,6 +788,11 @@ class PolicyMirroringTest(unittest.TestCase):
             "K_MIN_CAMERA_TO_TAG_DISTANCE_METERS": r"kMinCameraToTagDistanceMeters\s*=\s*([0-9.eE+-]+)",
             "K_MAX_VISION_TRANSLATION_METERS": r"kMaxVisionTranslationMeters\s*=\s*([0-9.eE+-]+)",
             "K_MAX_VISION_HEADING_DEGREES": r"kMaxVisionHeadingDegrees\s*=\s*([0-9.eE+-]+)",
+            "K_SINGLE_TAG_HEADING_PENALTY": r"kSingleTagHeadingPenalty\s*=\s*([0-9.eE+-]+)",
+            "FUSION_TIMESTAMP_EPSILON_SECONDS": r"kFusionTimestampEpsilonSeconds\s*=\s*([0-9.eE+-]+)",
+            "K_MAX_TRANSLATION_INNOVATION_METERS": r"kMaxTranslationInnovationMeters\s*=\s*([0-9.eE+-]+)",
+            "K_MAX_HEADING_INNOVATION_DEGREES": r"kMaxHeadingInnovationDegrees\s*=\s*([0-9.eE+-]+)",
+            "K_VISION_LOCALIZATION_TOLERANCE_METERS": r"kVisionLocalizationToleranceMeters\s*=\s*([0-9.eE+-]+)",
         }
         for attr, pattern in mapping.items():
             match = re.search(pattern, java)
@@ -632,6 +820,23 @@ class PolicyMirroringTest(unittest.TestCase):
         )
         match = re.search(r"kMultiTagBonus\s*=\s*([0-9.eE+-]+)", java)
         self.assertAlmostEqual(float(match.group(1)), VisionFusion.K_MULTI_TAG_BONUS, places=9)
+
+    def test_global_fusion_timestamp_rejects_out_of_order_frames(self):
+        fusion = VisionFusion()
+        fusion.reset_fusion_timestamp(10.0)
+        self.assertFalse(fusion.is_fusion_timestamp_in_order(9.99))
+        self.assertTrue(fusion.is_fusion_timestamp_in_order(10.02))
+        fusion.record_fusion_timestamp(10.02)
+        self.assertFalse(fusion.is_fusion_timestamp_in_order(10.01))
+        self.assertFalse(fusion.is_fusion_timestamp_in_order(10.02))
+        self.assertTrue(fusion.is_fusion_timestamp_in_order(10.04))
+
+    def test_vision_updates_are_bounded_and_sim_truth_uses_alliance_heading(self):
+        java = self._java_source("subsystems/DriveSubsystem.java")
+        self.assertIn("m_poseEstimator.sampleAt(est.timestampSeconds)", java)
+        self.assertIn("VisionFusion.limitMeasurementInnovation(", java)
+        self.assertIn("if (m_isSim) {\n      m_simRobotPose = startupPose;", java)
+        self.assertIn("resetOdometryFromKnownFieldPose(startupPose, \"STARTUP ALLIANCE DEFAULT\")", java)
 
     def test_simulated_gyro_formula_matches_java(self):
         java = self._java_source("subsystems/SimulatedGyro.java")
