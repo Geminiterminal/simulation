@@ -22,6 +22,8 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.VecBuilder; // WPILib standard deviations
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -105,6 +107,10 @@ public class DriveSubsystem extends SubsystemBase {
   // vision usage tracking
   private double m_lastVisionFuseTime = -1.0;
   private boolean m_visionActive = false;
+  // Initial field position and vision heading converge independently. Vision
+  // corrections are bounded while either is being acquired; gyro/alliance
+  // heading remains continuous during that process.
+  private boolean m_hasVisionPose = false;
   private boolean m_hasVisionHeading = false;
   private DriverStation.Alliance m_startupAlliance = DriverStation.Alliance.Blue;
 
@@ -189,64 +195,98 @@ public class DriveSubsystem extends SubsystemBase {
   // draining a camera's frame queue a second time in the same loop.
   private final Map<String, PhotonPipelineResult> m_latestFrameByCamera = new HashMap<>();
 
-  /** Number of vision solutions rejected by the post-seed outlier gate. */
+  /** Number of vision solutions rejected by the per-component outlier gates. */
   private int m_visionOutliersRejected = 0;
 
   //------------------------------------------------------------------------------------------------------
 
   /**
-   * Fuses every newly captured camera frame into the pose estimator and feeds
-   * the vision pipelines the current field heading so heading-aware solvers can
-   * use the gyro/odometry.
+   * Drains both camera queues and fuses frames in capture-time order. This is
+   * important because the two cameras have independent, variable latency:
+   * applying a newer frame and then an older one can make a latency-compensated
+   * pose estimator replay its history backwards.
    *
    * @return true if any camera contributed a measurement this loop
    */
   private boolean addPhotonVisionMeasurement() {
-    // The heading-aware PhotonVision solvers interpolate this to the capture
-    // timestamp of each frame; it must be updated every loop.
+    // Heading data is interpolated to each frame's capture timestamp by the
+    // heading-aware PhotonVision solvers, so publish it every robot loop.
     double now = Timer.getFPGATimestamp();
     Rotation2d fieldHeading = getPose().getRotation();
     m_backCameraEstimator.addHeadingData(now, fieldHeading);
     m_sideCameraEstimator.addHeadingData(now, fieldHeading);
 
-    // One intake per camera per loop: getAllUnreadResults() drains the camera's
-    // frame FIFO, so every captured frame is processed exactly once, each with
-    // its own capture timestamp (the pose estimator latency-compensates from it).
-    boolean backAccepted = fuseCameraFrames(
-        VisionConstants.kBackCameraName, m_backCamera, m_backCameraEstimator);
-    boolean sideAccepted = fuseCameraFrames(
-        VisionConstants.kSideCameraName, m_sideCamera, m_sideCameraEstimator);
+    List<PendingVisionFrame> pendingFrames = new ArrayList<>();
+    collectCameraFrames(
+        VisionConstants.kBackCameraName, m_backCamera, m_backCameraEstimator, pendingFrames);
+    collectCameraFrames(
+        VisionConstants.kSideCameraName, m_sideCamera, m_sideCameraEstimator, pendingFrames);
+    pendingFrames.sort(
+        Comparator.comparingDouble(
+            (PendingVisionFrame frame) -> frame.result.getTimestampSeconds()));
+
+    boolean backAccepted = false;
+    boolean sideAccepted = false;
+    for (PendingVisionFrame pending : pendingFrames) {
+      boolean accepted = fuseCameraFrame(pending.cameraName, pending.estimator, pending.result);
+      if (VisionConstants.kBackCameraName.equals(pending.cameraName)) {
+        backAccepted |= accepted;
+      } else if (VisionConstants.kSideCameraName.equals(pending.cameraName)) {
+        sideAccepted |= accepted;
+      }
+    }
+
     SmartDashboard.putBoolean("Vision/FrontCamera Accepted", backAccepted);
     SmartDashboard.putBoolean("Vision/GoodCamera_OldLeft Accepted", sideAccepted);
-    return backAccepted | sideAccepted;
+    return backAccepted || sideAccepted;
   }
 
-  private boolean fuseCameraFrames(
-      String cameraName, PhotonCamera camera, PhotonPoseEstimator cameraEstimator) {
+  private void collectCameraFrames(
+      String cameraName,
+      PhotonCamera camera,
+      PhotonPoseEstimator cameraEstimator,
+      List<PendingVisionFrame> pendingFrames) {
+    // getAllUnreadResults() drains each camera FIFO exactly once per loop.
     List<PhotonPipelineResult> frames = camera.getAllUnreadResults();
     if (frames.isEmpty()) {
-      return false;
+      return;
     }
-    m_latestFrameByCamera.put(cameraName, frames.get(frames.size() - 1));
 
-    boolean accepted = false;
+    m_latestFrameByCamera.put(cameraName, frames.get(frames.size() - 1));
     for (PhotonPipelineResult frame : frames) {
-      accepted |= fuseCameraFrame(cameraName, cameraEstimator, frame);
+      pendingFrames.add(new PendingVisionFrame(cameraName, cameraEstimator, frame));
     }
-    return accepted;
+  }
+
+  private static final class PendingVisionFrame {
+    final String cameraName;
+    final PhotonPoseEstimator estimator;
+    final PhotonPipelineResult result;
+
+    PendingVisionFrame(
+        String cameraName, PhotonPoseEstimator estimator, PhotonPipelineResult result) {
+      this.cameraName = cameraName;
+      this.estimator = estimator;
+      this.result = result;
+    }
   }
 
   private boolean fuseCameraFrame(
       String cameraName, PhotonPoseEstimator cameraEstimator, PhotonPipelineResult result) {
     if (!result.hasTargets()) return false;
 
-    // One capture must never be counted twice (NetworkTables can redeliver).
-    if (!m_visionFusion.shouldProcessFrame(cameraName, result.getTimestampSeconds())) return false;
+    double frameTimestamp = result.getTimestampSeconds();
+    // One capture must never be counted twice, and a late frame from either
+    // camera must not move estimator history behind a newer fused measurement.
+    if (!m_visionFusion.shouldProcessFrame(cameraName, frameTimestamp)) return false;
+    if (!m_visionFusion.isFusionTimestampInOrder(frameTimestamp)) {
+      return false;
+    }
 
     var best = result.getBestTarget();
 
-    // Quality gate: reject highly ambiguous frames and degenerate near-field
-    // solves before any pose math runs.
+    // Reject highly ambiguous frames and degenerate near-field solves before
+    // any pose math runs.
     double dist = best.getBestCameraToTarget().getTranslation().getNorm();
     if (!VisionFusion.isFrameAcceptable(best.getPoseAmbiguity(), dist)) return false;
 
@@ -255,40 +295,81 @@ public class DriveSubsystem extends SubsystemBase {
 
     var est = estOpt.get();
     Pose2d visionMeasurement = est.estimatedPose.toPose2d();
-    if (!isFinite(visionMeasurement)) return false;
-
-    if (!m_hasVisionHeading) {
-      // The first good solution establishes the complete pose rather than
-      // gradually blending from the alliance-only startup assumption. Until
-      // this seed exists the translation prior is meaningless, so the seed is
-      // a reset; every later measurement is fused smoothly by the estimator.
-      resetOdometryFromKnownFieldPose(visionMeasurement, "VISION INITIAL POSE");
-      m_hasVisionHeading = true;
-    } else {
-      // Outlier gate: a solution that disagrees wildly with the estimate is a
-      // glitch (mis-tagged target, bad solve), not a correction.
-      if (!VisionFusion.isConsistentWithEstimate(
-          getPose().getRotation().getDegrees(),
-          visionMeasurement.getRotation().getDegrees(),
-          getPose().getTranslation().getDistance(visionMeasurement.getTranslation()))) {
-        m_visionOutliersRejected++;
-        SmartDashboard.putNumber("Vision/Outliers Rejected", m_visionOutliersRejected);
-        return false;
-      }
-
-      // Trust the measurement for how good it actually is: multi-tag solutions
-      // and clean, close solves move the estimate more than marginal ones.
-      int targetsUsed = est.targetsUsed == null ? 1 : Math.max(1, est.targetsUsed.size());
-      boolean multiTag = est.strategy == PoseStrategy.MULTI_TAG_PNP_ON_COPROCESSOR;
-      double[] stddevs =
-          VisionFusion.measurementStdDevs(targetsUsed, best.getPoseAmbiguity(), dist, multiTag);
-      m_poseEstimator.addVisionMeasurement(
-          visionMeasurement,
-          est.timestampSeconds,
-          VecBuilder.fill(stddevs[0], stddevs[1], stddevs[2]));
-      m_fieldHeadingSource = "VISION FUSED";
+    if (!isFinite(visionMeasurement)
+        || !m_visionFusion.isFusionTimestampInOrder(est.timestampSeconds)) {
+      return false;
     }
 
+    int targetsUsed = est.targetsUsed == null ? 1 : Math.max(1, est.targetsUsed.size());
+    boolean multiTag = est.strategy == PoseStrategy.MULTI_TAG_PNP_ON_COPROCESSOR;
+    boolean hasMultiTagEvidence = multiTag || targetsUsed >= 2;
+
+    // Compare against the estimator's pose at image-capture time, not the pose
+    // now. This avoids mistaking normal robot motion during camera latency for
+    // an outlier and keeps the innovation in the correct temporal frame.
+    Optional<Pose2d> estimateAtCaptureOptional = m_poseEstimator.sampleAt(est.timestampSeconds);
+    if (estimateAtCaptureOptional.isEmpty()) {
+      // The capture is outside the estimator's retained odometry history (for
+      // example, from before the first update after a reset). Never substitute
+      // the present-time pose for a capture-time comparison.
+      return false;
+    }
+    Pose2d estimateAtCapture = estimateAtCaptureOptional.get();
+    double translationDelta =
+        estimateAtCapture.getTranslation().getDistance(visionMeasurement.getTranslation());
+    double estimatedHeadingDegrees = estimateAtCapture.getRotation().getDegrees();
+    double measuredHeadingDegrees = visionMeasurement.getRotation().getDegrees();
+
+    // During initial localization the prior position/heading may be wrong, so
+    // don't discard it. Once each component has converged, its normal outlier
+    // gate protects against bad solves. Every accepted frame is still bounded
+    // below, so an acquisition frame cannot snap the displayed pose.
+    if ((m_hasVisionPose
+            && !VisionFusion.isTranslationConsistentWithEstimate(translationDelta))
+        || (m_hasVisionHeading
+            && !VisionFusion.isHeadingConsistentWithEstimate(
+                estimatedHeadingDegrees, measuredHeadingDegrees))) {
+      m_visionOutliersRejected++;
+      SmartDashboard.putNumber("Vision/Outliers Rejected", m_visionOutliersRejected);
+      return false;
+    }
+
+    double[] boundedMeasurement = VisionFusion.limitMeasurementInnovation(
+        estimateAtCapture.getX(),
+        estimateAtCapture.getY(),
+        estimatedHeadingDegrees,
+        visionMeasurement.getX(),
+        visionMeasurement.getY(),
+        measuredHeadingDegrees);
+    Pose2d smoothMeasurement = new Pose2d(
+        boundedMeasurement[0],
+        boundedMeasurement[1],
+        Rotation2d.fromDegrees(boundedMeasurement[2]));
+    double[] stddevs =
+        VisionFusion.measurementStdDevs(targetsUsed, best.getPoseAmbiguity(), dist, multiTag);
+    m_poseEstimator.addVisionMeasurement(
+        smoothMeasurement,
+        est.timestampSeconds,
+        VecBuilder.fill(stddevs[0], stddevs[1], stddevs[2]));
+    m_visionFusion.recordFusionTimestamp(est.timestampSeconds);
+
+    Pose2d fusedAtCapture =
+        m_poseEstimator.sampleAt(est.timestampSeconds).orElse(estimateAtCapture);
+    if (!m_hasVisionPose
+        && fusedAtCapture.getTranslation().getDistance(visionMeasurement.getTranslation())
+            <= VisionFusion.kVisionLocalizationToleranceMeters) {
+      m_hasVisionPose = true;
+    }
+    if (!m_hasVisionHeading
+        && hasMultiTagEvidence
+        && VisionFusion.isHeadingConsistentWithEstimate(
+            fusedAtCapture.getRotation().getDegrees(), measuredHeadingDegrees)) {
+      m_hasVisionHeading = true;
+    }
+
+    m_fieldHeadingSource = m_hasVisionHeading
+        ? "VISION FUSED"
+        : (m_hasVisionPose ? "VISION POSITION LOCALIZED; HEADING ACQUIRING" : "VISION LOCALIZING");
     m_lastVisionRotation = visionMeasurement.getRotation();
     m_lastVisionFuseTime = Timer.getFPGATimestamp();
     SmartDashboard.putString("Vision/Last Accepted Camera", cameraName);
@@ -370,14 +451,20 @@ public class DriveSubsystem extends SubsystemBase {
       m_robotToSideCamera
     );
 
-    // Prefer a trustworthy camera pose at startup. If none is available, seed
-    // a field-relative heading from the alliance and let vision correct it as
-    // soon as a good AprilTag solution arrives.
-    if (!addPhotonVisionMeasurement()) {
-      resetOdometryFromKnownFieldPose(
-          new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading()),
-          "STARTUP ALLIANCE DEFAULT");
+    // Start with one consistent heading truth. In simulation the camera sees
+    // m_simRobotPose, so it must use the same alliance-default heading as the
+    // estimator or the first camera frame would appear to be a 180-degree
+    // correction. On real hardware the alliance heading is the startup prior.
+    Pose2d startupPose = withAllianceDefaultHeading(
+        m_isSim ? m_simRobotPose : getPose(), m_startupAlliance);
+    if (m_isSim) {
+      m_simRobotPose = startupPose;
     }
+    resetOdometryFromKnownFieldPose(startupPose, "STARTUP ALLIANCE DEFAULT");
+
+    // A frame can already be waiting on a real camera, but the default pose is
+    // established first so any first-vision localization preserves its heading.
+    addPhotonVisionMeasurement();
     
     // Configure AutoBuilder last
     if (config != null) {
@@ -474,14 +561,20 @@ public class DriveSubsystem extends SubsystemBase {
 
   @Override
   public void periodic() {
-    // Driver Station alliance data may arrive after robotInit. Until vision has
-    // established heading, correct the startup default when that data arrives.
+    // Driver Station alliance data may arrive after robotInit. Until a trusted
+    // vision heading has been established, update the startup heading prior.
     DriverStation.Alliance alliance = m_allianceSubsystem.getAlliance();
     if (!m_hasVisionHeading && alliance != m_startupAlliance) {
       m_startupAlliance = alliance;
-      resetOdometryFromKnownFieldPose(
-          new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading(alliance)),
-          "STARTUP ALLIANCE DEFAULT");
+      Pose2d startupPose = new Pose2d(
+          getPose().getTranslation(), getAllianceDefaultHeading(alliance));
+      if (m_isSim) {
+        m_simRobotPose = withAllianceDefaultHeading(m_simRobotPose, alliance);
+        if (!m_hasVisionPose) {
+          startupPose = m_simRobotPose;
+        }
+      }
+      resetOdometryFromKnownFieldPose(startupPose, "STARTUP ALLIANCE DEFAULT");
     }
 
     // 1. Update pose estimator with gyro + modules
@@ -584,6 +677,10 @@ public class DriveSubsystem extends SubsystemBase {
       m_simRobotPose = pose;
     }
     resetOdometryFromKnownFieldPose(pose, "ODOMETRY RESET");
+    // PathPlanner's authored start pose is authoritative, so camera data must
+    // fuse as a correction rather than restart localization after a reset.
+    m_hasVisionPose = true;
+    m_hasVisionHeading = true;
   }
 
   private void resetOdometryFromKnownFieldPose(Pose2d pose, String source) {
@@ -601,12 +698,22 @@ public class DriveSubsystem extends SubsystemBase {
     double now = Timer.getFPGATimestamp();
     m_backCameraEstimator.resetHeadingData(now, pose.getRotation());
     m_sideCameraEstimator.resetHeadingData(now, pose.getRotation());
+    // A reset starts a new estimator history. Do not replay camera frames that
+    // were captured before that history existed, including a manual correction
+    // from the cached latest-frame path.
+    m_visionFusion.resetFusionTimestamp(now);
+    m_latestFrameByCamera.clear();
     m_fieldHeadingSource = source;
   }
 
   static Rotation2d getAllianceDefaultHeading(DriverStation.Alliance alliance) {
     return Rotation2d.fromDegrees(
         alliance == DriverStation.Alliance.Red ? 0.0 : 180.0);
+  }
+
+  static Pose2d withAllianceDefaultHeading(
+      Pose2d pose, DriverStation.Alliance alliance) {
+    return new Pose2d(pose.getTranslation(), getAllianceDefaultHeading(alliance));
   }
 
   private Rotation2d getAllianceDefaultHeading() {
@@ -654,8 +761,20 @@ public class DriveSubsystem extends SubsystemBase {
       resetOdometryFromKnownFieldPose(
           m_simRobotPose,
           "ALLIANCE CHANGED: " + alliance.name());
-      // Let vision re-establish the heading from the new spot on the field.
-      m_hasVisionHeading = false;
+      // This is a known pose reset. New camera frames correct it gradually;
+      // they must not trigger another initialization snap.
+      m_hasVisionPose = true;
+      m_hasVisionHeading = true;
+    } else if (m_isSim) {
+      // With mirroring disabled, keep the simulated robot exactly where it is
+      // and keep the estimate aligned to that unchanged ground-truth pose.
+      if (!m_hasVisionPose) {
+        resetOdometryFromKnownFieldPose(
+            m_simRobotPose,
+            "ALLIANCE CHANGED WITHOUT MIRROR: " + alliance.name());
+        m_hasVisionPose = true;
+        m_hasVisionHeading = true;
+      }
     } else if (!m_hasVisionHeading) {
       resetOdometryFromKnownFieldPose(
           new Pose2d(getPose().getTranslation(), getAllianceDefaultHeading(alliance)),
@@ -868,17 +987,25 @@ public class DriveSubsystem extends SubsystemBase {
 
   /** Corrects the field pose from a high-confidence vision result. */
   public boolean correctTranslationFromVision() {
-      // Do not short-circuit, so either camera can provide the correction.
-      return correctTranslationFromCamera(VisionConstants.kBackCameraName, m_backCameraEstimator)
-          | correctTranslationFromCamera(VisionConstants.kSideCameraName, m_sideCameraEstimator);
+      // Snapshot both cached frames because the first correction resets the
+      // estimator and clears the cache. Do not short-circuit: either camera can
+      // provide the manual correction.
+      PhotonPipelineResult backFrame = m_latestFrameByCamera.get(VisionConstants.kBackCameraName);
+      PhotonPipelineResult sideFrame = m_latestFrameByCamera.get(VisionConstants.kSideCameraName);
+      boolean backCorrected = correctTranslationFromCamera(
+          VisionConstants.kBackCameraName, m_backCameraEstimator, backFrame);
+      boolean sideCorrected = correctTranslationFromCamera(
+          VisionConstants.kSideCameraName, m_sideCameraEstimator, sideFrame);
+      return backCorrected | sideCorrected;
   }
 
   private boolean correctTranslationFromCamera(
-      String cameraName, PhotonPoseEstimator cameraEstimator) {
+      String cameraName,
+      PhotonPoseEstimator cameraEstimator,
+      PhotonPipelineResult result) {
       // Re-solve from the most recent captured frame (taken in by the single
       // once-per-loop intake). Draining the camera queue here would steal the
       // frames the fusion path is supposed to see.
-      PhotonPipelineResult result = m_latestFrameByCamera.get(cameraName);
       if (result == null || !result.hasTargets()) return false;
 
       var best = result.getBestTarget();
@@ -898,6 +1025,7 @@ public class DriveSubsystem extends SubsystemBase {
 
           resetOdometryFromKnownFieldPose(
               visionPose, "MANUAL VISION CORRECTION: " + cameraName);
+          m_hasVisionPose = true;
           m_hasVisionHeading = true;
           m_lastVisionRotation = visionPose.getRotation();
           m_lastVisionFuseTime = Timer.getFPGATimestamp();

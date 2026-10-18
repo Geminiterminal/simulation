@@ -34,6 +34,19 @@ class VisionFusionTest {
   }
 
   @Test
+  void fusionTimestampsMustAdvanceAcrossAllCameras() {
+    VisionFusion fusion = new VisionFusion();
+    fusion.resetFusionTimestamp(10.0);
+
+    assertFalse(fusion.isFusionTimestampInOrder(9.99), "frames from before a pose reset are stale");
+    assertTrue(fusion.isFusionTimestampInOrder(10.02), "a newer capture may be fused");
+    fusion.recordFusionTimestamp(10.02);
+    assertFalse(fusion.isFusionTimestampInOrder(10.01), "late frames must not rewind estimator history");
+    assertFalse(fusion.isFusionTimestampInOrder(10.02), "one timestamp cannot be fused twice");
+    assertTrue(fusion.isFusionTimestampInOrder(10.04), "the next capture remains eligible");
+  }
+
+  @Test
   void qualityGateRejectsAmbiguousAndDegenerateSolves() {
     assertFalse(VisionFusion.isFrameAcceptable(0.5, 2.0), "high ambiguity");
     assertFalse(VisionFusion.isFrameAcceptable(0.25, 2.0), "ambiguity above the gate");
@@ -91,6 +104,9 @@ class VisionFusionTest {
 
     assertTrue(multiTag[0] < singleTag[0]);
     assertTrue(multiTag[2] < singleTag[2]);
+    assertTrue(
+        singleTag[2] > multiTag[2] * 5.0,
+        "single-tag heading must be substantially less authoritative than multi-tag heading");
   }
 
   @Test

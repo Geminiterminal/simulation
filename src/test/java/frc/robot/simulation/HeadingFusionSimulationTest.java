@@ -99,13 +99,19 @@ class HeadingFusionSimulationTest {
     final TruthHistory history = new TruthHistory();
     final Random visionNoise = new Random(4242L);
 
-    Pose2d truth = new Pose2d(1.0, 2.0, Rotation2d.fromDegrees(30.0));
+    Pose2d truth;
     final double[] moduleDistance = new double[4];
     double time = 0.0;
     double nextVisionTime = 0.1;
     boolean seeded = false;
+    boolean headingSeeded = false;
 
     Harness(double gyroDriftDegPerSec) {
+      this(gyroDriftDegPerSec, new Pose2d(1.0, 2.0, Rotation2d.fromDegrees(30.0)));
+    }
+
+    Harness(double gyroDriftDegPerSec, Pose2d initialPose) {
+      truth = initialPose;
       gyro = new SimulatedGyro(gyroDriftDegPerSec, 0.02, 987L);
       gyro.resetTo(truth.getRotation().getDegrees());
       estimator =
@@ -115,6 +121,7 @@ class HeadingFusionSimulationTest {
               modulePositions(kinematics.toSwerveModuleStates(new ChassisSpeeds())),
               truth);
       seeded = true; // Harness starts from a known pose, like an odometry reset.
+      headingSeeded = true;
       history.add(0.0, truth);
     }
 
@@ -158,6 +165,12 @@ class HeadingFusionSimulationTest {
           fuseVisionFrameAt(nextVisionTime - VISION_LATENCY);
           nextVisionTime += VISION_PERIOD;
         }
+      } else {
+        // No camera frames are queued during an outage. Advance the camera
+        // clock so recovery does not replay seconds of stale captures.
+        while (time >= nextVisionTime) {
+          nextVisionTime += VISION_PERIOD;
+        }
       }
       return new Step(time, truth, estimator.getEstimatedPosition());
     }
@@ -173,25 +186,57 @@ class HeadingFusionSimulationTest {
               truthAtCapture
                   .getRotation()
                   .plus(Rotation2d.fromDegrees(visionNoise.nextGaussian() * headingNoiseDeg)));
+      fuseVisionMeasurementAt(captureTime, measurement, TARGETS_USED, AMBIGUITY);
+    }
 
+    void fuseVisionMeasurementAt(
+        double captureTime, Pose2d measurement, int targetsUsed, double ambiguity) {
       // --- The exact DriveSubsystem fusion policy (VisionFusion) ---
       if (!fusion.shouldProcessFrame("sim-cam", captureTime)) return;
-      if (!VisionFusion.isFrameAcceptable(AMBIGUITY, TAG_DISTANCE)) return;
-      if (!seeded) {
-        estimator.resetPosition(gyroRotation(), modulePositions(currentStates()), measurement);
-        seeded = true;
+      if (!fusion.isFusionTimestampInOrder(captureTime)) return;
+      if (!VisionFusion.isFrameAcceptable(ambiguity, TAG_DISTANCE)) return;
+
+      var estimateAtCaptureOptional = estimator.sampleAt(captureTime);
+      if (estimateAtCaptureOptional.isEmpty()) return;
+      Pose2d estimateAtCapture = estimateAtCaptureOptional.get();
+      double translationDelta =
+          estimateAtCapture.getTranslation().getDistance(measurement.getTranslation());
+      double estimatedHeading = estimateAtCapture.getRotation().getDegrees();
+      double measuredHeading = measurement.getRotation().getDegrees();
+      if (seeded && !VisionFusion.isTranslationConsistentWithEstimate(translationDelta)) return;
+      if (headingSeeded
+          && !VisionFusion.isHeadingConsistentWithEstimate(estimatedHeading, measuredHeading)) {
         return;
       }
-      if (!VisionFusion.isConsistentWithEstimate(
-          estimator.getEstimatedPosition().getRotation().getDegrees(),
-          measurement.getRotation().getDegrees(),
-          estimator.getEstimatedPosition().getTranslation().getDistance(measurement.getTranslation()))) {
-        return;
-      }
+
+      double[] bounded = VisionFusion.limitMeasurementInnovation(
+          estimateAtCapture.getX(),
+          estimateAtCapture.getY(),
+          estimatedHeading,
+          measurement.getX(),
+          measurement.getY(),
+          measuredHeading);
+      Pose2d smoothMeasurement = new Pose2d(
+          bounded[0], bounded[1], Rotation2d.fromDegrees(bounded[2]));
+      boolean multiTag = targetsUsed >= 2;
       double[] stddevs =
-          VisionFusion.measurementStdDevs(TARGETS_USED, AMBIGUITY, TAG_DISTANCE, multiTag);
+          VisionFusion.measurementStdDevs(targetsUsed, ambiguity, TAG_DISTANCE, multiTag);
       estimator.addVisionMeasurement(
-          measurement, captureTime, VecBuilder.fill(stddevs[0], stddevs[1], stddevs[2]));
+          smoothMeasurement, captureTime, VecBuilder.fill(stddevs[0], stddevs[1], stddevs[2]));
+      fusion.recordFusionTimestamp(captureTime);
+
+      Pose2d fusedAtCapture = estimator.sampleAt(captureTime).orElse(estimateAtCapture);
+      if (!seeded
+          && fusedAtCapture.getTranslation().getDistance(measurement.getTranslation())
+              <= VisionFusion.kVisionLocalizationToleranceMeters) {
+        seeded = true;
+      }
+      if (!headingSeeded
+          && multiTag
+          && VisionFusion.isHeadingConsistentWithEstimate(
+              fusedAtCapture.getRotation().getDegrees(), measuredHeading)) {
+        headingSeeded = true;
+      }
     }
 
     SwerveModuleState[] currentStates() {
@@ -297,6 +342,131 @@ class HeadingFusionSimulationTest {
     assertTrue(
         maxExcessStep < 2.0,
         "estimated heading jumped " + maxExcessStep + " deg beyond real motion in one loop");
+  }
+
+  @Test
+  void intermittentSingleTagHeadingFlickerOnlyNudgesThePose() {
+    Pose2d start = new Pose2d(1.0, 2.0, Rotation2d.fromDegrees(179.0));
+    Harness harness = new Harness(0.0, start);
+    double maxHeadingStep = 0.0;
+    double maxTranslationStep = 0.0;
+
+    for (int i = 0; i < 100; i++) {
+      harness.step(new ChassisSpeeds(), false);
+      if (i < 3 || i % 3 != 0) {
+        continue;
+      }
+
+      // Simulate intermittent detections and a low-confidence single-tag solve
+      // changing between nearby pose hypotheses as the target reappears.
+      double measuredHeading = ((i / 3) % 2 == 0) ? -179.0 : 140.0;
+      Pose2d measurement =
+          new Pose2d(start.getX(), start.getY(), Rotation2d.fromDegrees(measuredHeading));
+      Pose2d before = harness.estimator.getEstimatedPosition();
+      harness.fuseVisionMeasurementAt(harness.time - VISION_LATENCY, measurement, 1, AMBIGUITY);
+      Pose2d after = harness.estimator.getEstimatedPosition();
+      maxHeadingStep = Math.max(
+          maxHeadingStep,
+          Math.abs(VisionFusion.wrapDegrees(
+              after.getRotation().getDegrees() - before.getRotation().getDegrees())));
+      maxTranslationStep = Math.max(
+          maxTranslationStep,
+          before.getTranslation().getDistance(after.getTranslation()));
+    }
+
+    assertTrue(maxHeadingStep < 1.5, "single-tag flicker moved heading " + maxHeadingStep + " deg");
+    assertTrue(maxTranslationStep < 0.05, "heading-only flicker moved pose " + maxTranslationStep + " m");
+    assertTrue(
+        Math.abs(VisionFusion.wrapDegrees(
+            harness.estimator.getEstimatedPosition().getRotation().getDegrees() - 179.0)) < 8.0,
+        "intermittent single-tag headings pulled the estimate away from its continuous prior");
+  }
+
+  @Test
+  void singleTagTranslationFlickerIsSmoothed() {
+    Pose2d start = new Pose2d(1.0, 2.0, new Rotation2d());
+    Harness harness = new Harness(0.0, start);
+    double maxTranslationStep = 0.0;
+
+    for (int i = 0; i < 100; i++) {
+      harness.step(new ChassisSpeeds(), false);
+      if (i < 3 || i % 3 != 0) {
+        continue;
+      }
+      double sign = ((i / 3) % 2 == 0) ? -1.0 : 1.0;
+      Pose2d measurement =
+          new Pose2d(
+              start.getX() + sign * 0.12,
+              start.getY() - sign * 0.10,
+              Rotation2d.fromDegrees(sign * 2.0));
+      Pose2d before = harness.estimator.getEstimatedPosition();
+      harness.fuseVisionMeasurementAt(
+          harness.time - VISION_LATENCY, measurement, 1, AMBIGUITY);
+      Pose2d after = harness.estimator.getEstimatedPosition();
+      maxTranslationStep = Math.max(
+          maxTranslationStep,
+          before.getTranslation().getDistance(after.getTranslation()));
+    }
+
+    assertTrue(maxTranslationStep < 0.15, "single-tag translation flicker moved " + maxTranslationStep + " m");
+    assertTrue(
+        harness.estimator.getEstimatedPosition().getTranslation().getDistance(start.getTranslation()) < 0.2,
+        "single-tag translation noise pulled the pose too far from its smooth prior");
+  }
+
+  @Test
+  void firstVisionLocalizationConvergesWithoutSnappingPoseOrHeading() {
+    Harness harness = new Harness(0.0);
+    Pose2d startupPrior = new Pose2d(0.0, 0.0, new Rotation2d());
+    Pose2d truth = new Pose2d(4.0, 3.0, new Rotation2d());
+
+    harness.truth = truth;
+    harness.gyro.resetTo(truth.getRotation().getDegrees());
+    harness.estimator.resetPosition(
+        harness.gyroRotation(), harness.modulePositions(harness.currentStates()), startupPrior);
+    harness.history.add(0.0, truth);
+    harness.fusion.resetFusionTimestamp(0.0);
+    harness.seeded = false;
+    harness.headingSeeded = false;
+
+    // Establish estimator history before the latency-stamped camera result.
+    for (int i = 0; i < 5; i++) {
+      harness.step(new ChassisSpeeds(), false);
+    }
+    Pose2d prior = harness.estimator.getEstimatedPosition();
+    harness.fuseVisionMeasurementAt(
+        harness.time - VISION_LATENCY, truth, TARGETS_USED, AMBIGUITY);
+    Pose2d afterFirstFrame = harness.estimator.getEstimatedPosition();
+
+    assertTrue(
+        prior.getTranslation().getDistance(afterFirstFrame.getTranslation())
+            < VisionFusion.kMaxTranslationInnovationMeters,
+        "first vision frame moved translation too far");
+    assertTrue(
+        Math.abs(VisionFusion.wrapDegrees(
+            afterFirstFrame.getRotation().getDegrees() - prior.getRotation().getDegrees())) < 3.0,
+        "first vision frame snapped the startup heading");
+
+    double maxHeadingStep = 0.0;
+    Pose2d previous = afterFirstFrame;
+    for (int i = 0; i < 300; i++) {
+      Step step = harness.step(new ChassisSpeeds(), true);
+      maxHeadingStep = Math.max(
+          maxHeadingStep,
+          Math.abs(VisionFusion.wrapDegrees(
+              step.estimate.getRotation().getDegrees() - previous.getRotation().getDegrees())));
+      previous = step.estimate;
+    }
+
+    assertTrue(harness.seeded, "vision translation did not converge");
+    assertTrue(harness.headingSeeded, "multi-tag heading did not converge");
+    assertTrue(maxHeadingStep < 2.0, "heading correction jumped " + maxHeadingStep + " deg");
+    assertTrue(
+        harness.estimator.getEstimatedPosition().getTranslation().getDistance(truth.getTranslation()) < 0.5,
+        "vision translation did not converge smoothly");
+    assertTrue(headingErrorDegrees(
+        new Step(harness.time, truth, harness.estimator.getEstimatedPosition())) < 3.0,
+        "vision heading did not converge smoothly");
   }
 
   @Test

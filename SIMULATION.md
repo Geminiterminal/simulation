@@ -73,9 +73,10 @@ What changes when the alliance switches:
   path, so the robot lands where the flipped path starts. Set
   `Mirror Robot On Alliance Change` to `false` on the dashboard to keep the
   robot where it is and only switch the alliance logic.
-- **The heading** is re-seeded to the alliance default (180° on blue, 0° on
-  red, i.e. facing your own alliance wall) and vision re-establishes the
-  heading from the new spot on the field.
+- **The heading** is set to the alliance default (180° on blue, 0° on red,
+  facing your alliance wall) when the robot is mirrored. With mirroring
+  disabled, its current pose and heading stay put; vision continues correcting
+  from that prior.
 - **The hub** follows the alliance, so auto-aim and the auto-distance
   controller shoot at the right hub.
 
@@ -99,28 +100,33 @@ pipeline:
 
 How the fusion stays accurate, stable and smooth:
 
-- **One capture, one measurement.** Frames are drained with
-  `getAllUnreadResults()` exactly once per loop per camera and stamped with
-  their capture time, so the estimator latency-compensates each measurement to
-  the moment the image was taken. A per-camera timestamp guard
-  (`VisionFusion.shouldProcessFrame`) makes double fusion impossible even if a
-  frame is redelivered.
+- **One capture, one measurement, in time order.** Both camera queues are
+  drained once per loop and their frames are sorted by capture timestamp before
+  fusion. The estimator latency-compensates each measurement to capture time;
+  per-camera de-duplication prevents repeated frames, and a global monotonic
+  timestamp guard drops late frames that would otherwise rewind the estimator
+  after the other camera has already advanced it.
 - **Trust scales with quality.** `VisionFusion.measurementStdDevs` turns
   ambiguity, camera-to-tag distance and the number of tags used into the
-  standard deviations handed to the estimator: a clean multi-tag solve moves
-  the estimate firmly, a marginal single-tag solve only nudges it. Ambiguous
-  frames (ambiguity > 0.2) and degenerate near-field solves (< 0.22 m) are
-  dropped before any pose math runs. When the camera provides a multi-tag PNP
-  result it is used directly (strongest heading solution); otherwise the tag
-  closest to the current estimate is used.
-- **Outliers are rejected, drift is corrected.** After the initial seed, a
-  measurement more than 45° / 1.5 m away from the estimate is treated as a
-  glitch and discarded; measurements inside that window fuse normally - which
-  is exactly what pulls the heading back after gyro drift.
-- **Seeding is a one-time reset, everything after is a smooth update.** Until
-  vision has established a field pose the translation prior is meaningless,
-  so the first good solution resets the full pose (`VISION INITIAL POSE`).
-  From then on every correction is Kalman-scaled - the heading never snaps.
+  standard deviations handed to the estimator. Multi-tag solutions provide
+  the strongest heading; single-tag heading is deliberately downweighted
+  because its PNP orientation can change hypotheses as targets appear and
+  disappear. Ambiguous frames (ambiguity > 0.2) and degenerate near-field
+  solves (< 0.22 m) are dropped before any pose math runs.
+- **Outliers are rejected, drift is corrected.** Position and heading
+  localization are tracked independently; once each component settles, a
+  residual over 1.5 m / 45° is treated as a glitch. In-window measurements
+  fuse with quality-scaled Kalman gains.
+- **Vision reacquisition never resets the estimated pose.** Vision translation
+  and heading converge through timestamped estimator updates, with each frame's
+  innovation capped at 0.20 m and 2°. The heading therefore stays continuous
+  while localization converges; single-tag heading is additionally weighted
+  very lightly. PathPlanner's authored start pose is marked authoritative, so
+  the first camera frame after an odometry reset cannot overwrite it.
+- **Simulation starts from one heading truth.** The simulated ground-truth pose
+  is initialized to the alliance default before the camera simulation starts;
+  this prevents the first synthetic AprilTag frame from appearing to be a
+  180° correction against the estimator.
 - **Odometry resets honor the full authored pose.** `resetOdometry(pose)` is
   "the robot is now at this pose": translation AND rotation, in the estimator
   and (in simulation) in the ground truth. WPILib's odometry offsets the gyro
@@ -271,8 +277,8 @@ in `Constants.VisionConstants`. Sources of each value:
 - `HeadingFusionSimulationTest` - a closed-loop heading/pose-estimation
   simulation (drifting gyro + noisy latency-stamped vision through the same
   pipeline the robot runs): heading accuracy through arcs and in-place turns,
-  gyro-drift rejection after vision outages, jump-free heading updates, and
-  duplicate-frame handling.
+  gyro-drift recovery after vision outages, single-tag flicker, heading-safe
+  first localization, jump-free updates, and duplicate-frame handling.
 
 The same heading scenarios are also mirrored in pure Python
 (`tests/test_heading_estimation.py`), together with the auto-start reset

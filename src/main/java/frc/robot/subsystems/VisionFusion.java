@@ -31,15 +31,27 @@ public final class VisionFusion {
   public static final double kMinCameraToTagDistanceMeters = 0.22;
 
   /**
-   * Post-seed outlier gate: a fused measurement may differ from the current
-   * estimate by at most this much before it is treated as a glitch rather than
-   * a correction. Sized to allow real drift correction while rejecting single
-   * bad solves.
+   * Post-localization outlier gate: a fused measurement may differ from the
+   * current estimate by at most this much before it is treated as a glitch
+   * rather than a correction. Position and heading localization are tracked
+   * independently by the drive subsystem.
    */
   public static final double kMaxVisionTranslationMeters = 1.5;
 
   /** Heading counterpart of {@link #kMaxVisionTranslationMeters}, in degrees. */
   public static final double kMaxVisionHeadingDegrees = 45.0;
+
+  /** Small tolerance for camera timestamps which should represent one capture. */
+  public static final double kFusionTimestampEpsilonSeconds = 1e-6;
+
+  /** Maximum position innovation offered to the estimator by one frame. */
+  public static final double kMaxTranslationInnovationMeters = 0.20;
+
+  /** Maximum heading innovation offered to the estimator by one frame. */
+  public static final double kMaxHeadingInnovationDegrees = 2.0;
+
+  /** Position error below which initial field localization is considered settled. */
+  public static final double kVisionLocalizationToleranceMeters = 0.75;
 
   // --- Measurement trust scaling (see measurementStdDevs) ---
   /** 1-sigma position trust of a clean, close, multi-tag frame. */
@@ -57,8 +69,14 @@ public final class VisionFusion {
   /** Multi-tag solutions are geometrically stronger than any single-tag solve. */
   private static final double kMultiTagBonus = 0.6;
 
+  /** Single-tag PNP headings are more vulnerable to ambiguity and pose flips. */
+  private static final double kSingleTagHeadingPenalty = 50.0;
+
   /** Timestamps of the most recent frame accepted for each camera. */
   private final Map<String, Double> m_lastProcessedFrame = new HashMap<>();
+
+  /** Latest capture time fused across all cameras, not just one camera. */
+  private double m_lastFusionTimestampSeconds = Double.NEGATIVE_INFINITY;
 
   /** Creates the frame bookkeeping for one robot's worth of cameras. */
   public VisionFusion() {
@@ -77,12 +95,43 @@ public final class VisionFusion {
    * @return true if this is a frame that has not been processed before
    */
   public synchronized boolean shouldProcessFrame(String cameraName, double timestampSeconds) {
+    if (!Double.isFinite(timestampSeconds)) {
+      return false;
+    }
     Double last = m_lastProcessedFrame.get(cameraName);
-    if (last != null && Math.abs(last - timestampSeconds) < 1e-6) {
+    if (last != null && Math.abs(last - timestampSeconds) < kFusionTimestampEpsilonSeconds) {
       return false;
     }
     m_lastProcessedFrame.put(cameraName, timestampSeconds);
     return true;
+  }
+
+  /**
+   * Checks that a frame is newer than the latest fused/reset timestamp. Callers
+   * drain both cameras and sort the batch first; this guard handles late frames
+   * which arrive in a later loop after the other camera has already advanced
+   * the estimator.
+   */
+  public synchronized boolean isFusionTimestampInOrder(double timestampSeconds) {
+    return Double.isFinite(timestampSeconds)
+        && timestampSeconds > m_lastFusionTimestampSeconds + kFusionTimestampEpsilonSeconds;
+  }
+
+  /** Records a capture timestamp after its measurement has been fused. */
+  public synchronized void recordFusionTimestamp(double timestampSeconds) {
+    if (Double.isFinite(timestampSeconds)) {
+      m_lastFusionTimestampSeconds = Math.max(m_lastFusionTimestampSeconds, timestampSeconds);
+    }
+  }
+
+  /**
+   * Marks the estimator history boundary after an odometry reset. Camera frames
+   * captured before this instant cannot be fused into the new pose history.
+   */
+  public synchronized void resetFusionTimestamp(double timestampSeconds) {
+    m_lastFusionTimestampSeconds = Double.isFinite(timestampSeconds)
+        ? timestampSeconds
+        : Double.NEGATIVE_INFINITY;
   }
 
   /**
@@ -112,10 +161,10 @@ public final class VisionFusion {
   }
 
   /**
-   * Outlier gate used after the heading has been seeded: rejects measurements
-   * that disagree wildly with the current estimate (glitches, misidentified
-   * tags) while still allowing vision to correct gyro drift and accumulated
-   * odometry error.
+   * Combined outlier gate used after both pose components have localized:
+   * rejects measurements that disagree wildly with the current estimate
+   * (glitches, misidentified tags) while allowing vision to correct gyro drift
+   * and accumulated odometry error.
    *
    * @param estimatedHeadingDegrees current estimated heading
    * @param measuredHeadingDegrees heading from the vision solve
@@ -124,12 +173,55 @@ public final class VisionFusion {
    */
   public static boolean isConsistentWithEstimate(
       double estimatedHeadingDegrees, double measuredHeadingDegrees, double translationDeltaMeters) {
-    if (!Double.isFinite(translationDeltaMeters)
-        || translationDeltaMeters > kMaxVisionTranslationMeters) {
-      return false;
-    }
+    return isTranslationConsistentWithEstimate(translationDeltaMeters)
+        && isHeadingConsistentWithEstimate(estimatedHeadingDegrees, measuredHeadingDegrees);
+  }
+
+  /** Returns whether the position residual is within the post-localization gate. */
+  public static boolean isTranslationConsistentWithEstimate(double translationDeltaMeters) {
+    return Double.isFinite(translationDeltaMeters)
+        && translationDeltaMeters <= kMaxVisionTranslationMeters;
+  }
+
+  /** Returns whether the circular heading residual is within the outlier gate. */
+  public static boolean isHeadingConsistentWithEstimate(
+      double estimatedHeadingDegrees, double measuredHeadingDegrees) {
     double headingDeltaDegrees = Math.abs(wrapDegrees(measuredHeadingDegrees - estimatedHeadingDegrees));
     return Double.isFinite(headingDeltaDegrees) && headingDeltaDegrees <= kMaxVisionHeadingDegrees;
+  }
+
+  /**
+   * Limits a camera pose's innovation relative to the estimator sample at the
+   * same capture time. This prevents a single reacquired frame from moving the
+   * field pose abruptly while allowing repeated good frames to converge.
+   *
+   * @return {boundedX, boundedY, boundedHeadingDegrees}
+   */
+  public static double[] limitMeasurementInnovation(
+      double estimatedX,
+      double estimatedY,
+      double estimatedHeadingDegrees,
+      double measuredX,
+      double measuredY,
+      double measuredHeadingDegrees) {
+    double dx = measuredX - estimatedX;
+    double dy = measuredY - estimatedY;
+    double distance = Math.hypot(dx, dy);
+    if (distance > kMaxTranslationInnovationMeters) {
+      double scale = kMaxTranslationInnovationMeters / distance;
+      dx *= scale;
+      dy *= scale;
+    }
+
+    double headingDelta = wrapDegrees(measuredHeadingDegrees - estimatedHeadingDegrees);
+    headingDelta = Math.max(
+        -kMaxHeadingInnovationDegrees,
+        Math.min(kMaxHeadingInnovationDegrees, headingDelta));
+    return new double[] {
+      estimatedX + dx,
+      estimatedY + dy,
+      estimatedHeadingDegrees + headingDelta
+    };
   }
 
   /**
@@ -137,7 +229,8 @@ public final class VisionFusion {
    * solutions beat single-tag, clean ambiguities beat marginal ones, and nearby
    * tags beat far ones. The values are handed to the WPILib pose estimator as
    * per-measurement standard deviations, so a bad frame moves the heading a
-   * little and a great frame moves it a lot - smoothly, in one step per frame.
+   * little and a great frame moves it more. The drive subsystem separately
+   * bounds each frame's innovation to keep even strong corrections seamless.
    *
    * @param targetsUsed how many targets went into the solve
    * @param poseAmbiguity best-target ambiguity, or negative if unknown
@@ -153,12 +246,17 @@ public final class VisionFusion {
     double ambiguity = poseAmbiguity < 0.0 ? 0.0 : Math.max(0.0, poseAmbiguity);
     double distance = Math.max(0.0, cameraToTagDistanceMeters);
     double quality = (1.0 + kAmbiguityPenalty * ambiguity) * (1.0 + distance / kDistancePenaltyMeters);
-    double tagStrength = (multiTagSolution || targetsUsed >= 2) ? kMultiTagBonus : 1.0;
-    double scale = quality * tagStrength;
+    boolean hasMultiTagEvidence = multiTagSolution || targetsUsed >= 2;
+    double positionScale = quality * (hasMultiTagEvidence ? kMultiTagBonus : 1.0);
+    // A single-tag translation can still be useful, but its PNP heading may
+    // jump between ambiguous orientations as targets appear/disappear. Make
+    // it much less authoritative than a heading supported by multiple tags.
+    double headingScale = quality
+        * (hasMultiTagEvidence ? kMultiTagBonus : kSingleTagHeadingPenalty);
     return new double[] {
-      kBasePositionStdDevMeters * scale,
-      kBasePositionStdDevMeters * scale,
-      kBaseHeadingStdDevRadians * scale
+      kBasePositionStdDevMeters * positionScale,
+      kBasePositionStdDevMeters * positionScale,
+      kBaseHeadingStdDevRadians * headingScale
     };
   }
 

@@ -82,6 +82,44 @@ class DriveSubsystemTest {
   }
 
   @Test
+  void simulatedStartupPoseUsesTheAllianceHeadingAsGroundTruth() {
+    Pose2d simulatedTruth = new Pose2d(1.25, 2.5, Rotation2d.fromDegrees(0.0));
+
+    Pose2d blueStart = DriveSubsystem.withAllianceDefaultHeading(
+        simulatedTruth, DriverStation.Alliance.Blue);
+    Pose2d redStart = DriveSubsystem.withAllianceDefaultHeading(
+        simulatedTruth, DriverStation.Alliance.Red);
+
+    assertEquals(simulatedTruth.getTranslation(), blueStart.getTranslation());
+    assertEquals(simulatedTruth.getTranslation(), redStart.getTranslation());
+    assertEquals(180.0, blueStart.getRotation().getDegrees(), EPSILON);
+    assertEquals(0.0, redStart.getRotation().getDegrees(), EPSILON);
+  }
+
+  @Test
+  void oneVisionFrameCannotOfferAnUnboundedPoseCorrection() {
+    double[] bounded = VisionFusion.limitMeasurementInnovation(
+        1.0, 2.0, 179.0,
+        5.0, 6.0, -30.0);
+
+    double translationCorrection = Math.hypot(bounded[0] - 1.0, bounded[1] - 2.0);
+    double headingCorrection = Math.abs(
+        VisionFusion.wrapDegrees(bounded[2] - 179.0));
+
+    assertEquals(VisionFusion.kMaxTranslationInnovationMeters, translationCorrection, EPSILON);
+    assertEquals(VisionFusion.kMaxHeadingInnovationDegrees, headingCorrection, EPSILON);
+  }
+
+  @Test
+  void headingInnovationUsesTheShortPathAcrossWraparound() {
+    double[] bounded = VisionFusion.limitMeasurementInnovation(
+        1.0, 2.0, 179.0,
+        1.0, 2.0, -179.0);
+
+    assertEquals(2.0, VisionFusion.wrapDegrees(bounded[2] - 179.0), EPSILON);
+  }
+
+  @Test
   void hubLocationFollowsTheAlliance() {
     assertEquals(FieldConstants.kBlueHubX,
         DriveSubsystem.getHubLocation(DriverStation.Alliance.Blue).getX(), EPSILON);
