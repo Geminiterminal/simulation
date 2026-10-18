@@ -19,7 +19,7 @@
   "driveWheelRadius": 0.038,
   "driveGearing": 5.08,
   "maxDriveSpeed": 4.8,
-  "driveMotorType": "neo",
+  "driveMotorType": "NEO",
   "driveCurrentLimit": 50.0,
   "wheelCOF": 1.2,
   "flModuleX": 0.267,

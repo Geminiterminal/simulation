@@ -14,6 +14,14 @@ class PathPlannerAssetsTest(unittest.TestCase):
         self.assertTrue(settings["holonomicMode"])
         self.assertGreater(settings["robotMass"], 0)
 
+    def test_neo_drive_motor_uses_pathplanner_library_token(self):
+        settings = json.loads((DEPLOY / "settings.json").read_text())
+        # PathPlannerLib 2026.1.2 parses driveMotorType with a case-sensitive
+        # switch. The NEO token is "NEO" (not "neo"); an unknown token makes
+        # RobotConfig.fromGUISettings() throw, so DriveSubsystem never configures
+        # AutoBuilder and the selected autonomous command becomes a no-op.
+        self.assertEqual(settings["driveMotorType"], "NEO")
+
     def test_chooser_autos_exist_with_exact_case(self):
         source = (ROOT / "src/main/java/frc/robot/RobotContainer.java").read_text()
         names = re.findall(r'autoChooser.addOption\("[^"]+", "([^"]+)"\)', source)
