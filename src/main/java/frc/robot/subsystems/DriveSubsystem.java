@@ -22,6 +22,9 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.VecBuilder; // WPILib standard deviations
 
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import com.studica.frc.AHRS;
@@ -41,11 +44,14 @@ import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.util.PathPlannerLogging;
 
 import edu.wpi.first.math.estimator.SwerveDrivePoseEstimator;
+import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Transform3d;
 
+import org.photonvision.EstimatedRobotPose;
 import org.photonvision.PhotonCamera;
 import org.photonvision.PhotonPoseEstimator;
 import org.photonvision.PhotonPoseEstimator.PoseStrategy;
+import org.photonvision.targeting.PhotonPipelineResult;
 
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
@@ -77,17 +83,23 @@ public class DriveSubsystem extends SubsystemBase {
       DriveConstants.kRearRightTurningCanId,
       DriveConstants.kBackRightChassisAngularOffset);
 
-  // The gyro sensor. On the real robot this is the navX MXP. In simulation
-  // there is no navX hardware, so the heading is integrated from the swerve
-  // physics instead (see simulationPeriodic and getSimPose).
+  // The gyro sensor. On the real robot this is the navX MXP. In simulation it
+  // is replaced by a sensor model (SimulatedGyro) that integrates the true
+  // chassis yaw rate with realistic bias and noise, so heading estimation is
+  // exercised exactly like on the real robot.
   private final AHRS m_gyro = RobotBase.isSimulation() ? null : new AHRS(NavXComType.kMXP_SPI);
 
   // --- Simulation ground truth (real hardware needs no analog) ---
-  // NOTE: declared before m_poseEstimator, whose initializer reads
-  // getGyroRotation() (which consults these in simulation).
+  // NOTE: these are declared before m_poseEstimator, whose initializer reads
+  // getGyroRotation() (which consults them in simulation).
   private final boolean m_isSim = RobotBase.isSimulation();
   private Pose2d m_simRobotPose = new Pose2d();
   private double m_simOmegaRadPerSecond = 0.0;
+  private final SimulatedGyro m_simGyro =
+      new SimulatedGyro(
+          SimulationConstants.kSimGyroDriftDegreesPerSecond,
+          SimulationConstants.kSimGyroNoiseDegreesPerSecond,
+          SimulationConstants.kSimGyroRandomSeed);
   private final Field2d m_simField = new Field2d();
 
   // vision usage tracking
@@ -148,79 +160,153 @@ public class DriveSubsystem extends SubsystemBase {
           new Pose2d() // start at origin; you can override with resetOdometry
       );
 
- // === PhotonVision / AprilTag stuff ===
+  // === PhotonVision / AprilTag stuff ===
 
   // Camera and PhotonPoseEstimator ----------------------------
   // Names and transforms are shared with the vision simulation via
   // VisionConstants so the sim publishes frames to these exact cameras.
-  private final PhotonCamera m_oldLeftCamera = new PhotonCamera(VisionConstants.kBackCameraName); // now our back camera
-  private final PhotonCamera m_frontCamera = new PhotonCamera(VisionConstants.kSideCameraName); // actually side camera now
-  private final PhotonPoseEstimator m_oldLeftCameraEstimator;
-  private final PhotonPoseEstimator m_frontCameraEstimator;
+  // NOTE: the PhotonVision camera named "FrontCamera" is the unit mounted at
+  // the REAR of the robot (see VisionConstants). Names always refer to the
+  // PhotonVision topic, never the physical mounting.
+  private final PhotonCamera m_backCamera = new PhotonCamera(VisionConstants.kBackCameraName);
+  private final PhotonCamera m_sideCamera = new PhotonCamera(VisionConstants.kSideCameraName);
+  private final PhotonPoseEstimator m_backCameraEstimator;
+  private final PhotonPoseEstimator m_sideCameraEstimator;
 
   // Camera pose estimator ----------------------------------
-  // transform for current back camera
-  private final Transform3d m_robotToCamera = VisionConstants.kRobotToBackCamera;
+  // transform for the rear-facing camera
+  private final Transform3d m_robotToBackCamera = VisionConstants.kRobotToBackCamera;
 
-  // transform for current side camera
-  private final Transform3d m_robotToFrontCamera = VisionConstants.kRobotToSideCamera;
+  // transform for the side-facing camera
+  private final Transform3d m_robotToSideCamera = VisionConstants.kRobotToSideCamera;
+
+  // Frame-intake bookkeeping and measurement policy (de-dup, quality gates,
+  // outlier rejection, trust scaling). See VisionFusion.
+  private final VisionFusion m_visionFusion = new VisionFusion();
+
+  // Most recent frame from each camera, captured by the once-per-loop intake
+  // below. The manual "force reseed" button re-solves from these instead of
+  // draining a camera's frame queue a second time in the same loop.
+  private final Map<String, PhotonPipelineResult> m_latestFrameByCamera = new HashMap<>();
+
+  /** Number of vision solutions rejected by the post-seed outlier gate. */
+  private int m_visionOutliersRejected = 0;
 
   //------------------------------------------------------------------------------------------------------
 
+  /**
+   * Fuses every newly captured camera frame into the pose estimator and feeds
+   * the vision pipelines the current field heading so heading-aware solvers can
+   * use the gyro/odometry.
+   *
+   * @return true if any camera contributed a measurement this loop
+   */
   private boolean addPhotonVisionMeasurement() {
-    // Do not short-circuit: each camera must get a chance to contribute every loop.
-    boolean oldLeftAccepted = fuseCameraMeasurement(
-        "GoodCamera_OldLeft", m_oldLeftCamera, m_oldLeftCameraEstimator);
-    boolean frontAccepted = fuseCameraMeasurement(
-        "FrontCamera", m_frontCamera, m_frontCameraEstimator);
-    SmartDashboard.putBoolean("Vision/GoodCamera_OldLeft Accepted", oldLeftAccepted);
-    SmartDashboard.putBoolean("Vision/FrontCamera Accepted", frontAccepted);
-    return oldLeftAccepted | frontAccepted;
+    // The heading-aware PhotonVision solvers interpolate this to the capture
+    // timestamp of each frame; it must be updated every loop.
+    double now = Timer.getFPGATimestamp();
+    Rotation2d fieldHeading = getPose().getRotation();
+    m_backCameraEstimator.addHeadingData(now, fieldHeading);
+    m_sideCameraEstimator.addHeadingData(now, fieldHeading);
+
+    // One intake per camera per loop: getAllUnreadResults() drains the camera's
+    // frame FIFO, so every captured frame is processed exactly once, each with
+    // its own capture timestamp (the pose estimator latency-compensates from it).
+    boolean backAccepted = fuseCameraFrames(
+        VisionConstants.kBackCameraName, m_backCamera, m_backCameraEstimator);
+    boolean sideAccepted = fuseCameraFrames(
+        VisionConstants.kSideCameraName, m_sideCamera, m_sideCameraEstimator);
+    SmartDashboard.putBoolean("Vision/FrontCamera Accepted", backAccepted);
+    SmartDashboard.putBoolean("Vision/GoodCamera_OldLeft Accepted", sideAccepted);
+    return backAccepted | sideAccepted;
   }
 
-  private boolean fuseCameraMeasurement(
+  private boolean fuseCameraFrames(
       String cameraName, PhotonCamera camera, PhotonPoseEstimator cameraEstimator) {
-    var result = camera.getLatestResult();
+    List<PhotonPipelineResult> frames = camera.getAllUnreadResults();
+    if (frames.isEmpty()) {
+      return false;
+    }
+    m_latestFrameByCamera.put(cameraName, frames.get(frames.size() - 1));
 
-    // ---- THE SAFETY SHIELD ----
+    boolean accepted = false;
+    for (PhotonPipelineResult frame : frames) {
+      accepted |= fuseCameraFrame(cameraName, cameraEstimator, frame);
+    }
+    return accepted;
+  }
+
+  private boolean fuseCameraFrame(
+      String cameraName, PhotonPoseEstimator cameraEstimator, PhotonPipelineResult result) {
     if (!result.hasTargets()) return false;
+
+    // One capture must never be counted twice (NetworkTables can redeliver).
+    if (!m_visionFusion.shouldProcessFrame(cameraName, result.getTimestampSeconds())) return false;
 
     var best = result.getBestTarget();
 
-    // 1. AMBIGUITY FILTER: Reject highly ambiguous frames
-    if (best.getPoseAmbiguity() > 0.2 && best.getPoseAmbiguity() != -1) return false;
+    // Quality gate: reject highly ambiguous frames and degenerate near-field
+    // solves before any pose math runs.
+    double dist = best.getBestCameraToTarget().getTranslation().getNorm();
+    if (!VisionFusion.isFrameAcceptable(best.getPoseAmbiguity(), dist)) return false;
 
-    cameraEstimator.setReferencePose(getPose());
-    var estOpt = cameraEstimator.update(result);
+    Optional<EstimatedRobotPose> estOpt = solveCameraPose(cameraEstimator, result);
     if (estOpt.isEmpty()) return false;
 
     var est = estOpt.get();
-    m_lastVisionRotation = est.estimatedPose.toPose2d().getRotation();
-
-    // ---- SAFETY GATE: reject degenerate / impossible camera->tag solves ----
-    double dist = best.getBestCameraToTarget().getTranslation().getNorm();
-    if (!Double.isFinite(dist) || dist < 0.22) return false;
-
     Pose2d visionMeasurement = est.estimatedPose.toPose2d();
     if (!isFinite(visionMeasurement)) return false;
+
     if (!m_hasVisionHeading) {
       // The first good solution establishes the complete pose rather than
-      // gradually blending from the alliance-only startup assumption.
+      // gradually blending from the alliance-only startup assumption. Until
+      // this seed exists the translation prior is meaningless, so the seed is
+      // a reset; every later measurement is fused smoothly by the estimator.
       resetOdometryFromKnownFieldPose(visionMeasurement, "VISION INITIAL POSE");
       m_hasVisionHeading = true;
     } else {
+      // Outlier gate: a solution that disagrees wildly with the estimate is a
+      // glitch (mis-tagged target, bad solve), not a correction.
+      if (!VisionFusion.isConsistentWithEstimate(
+          getPose().getRotation().getDegrees(),
+          visionMeasurement.getRotation().getDegrees(),
+          getPose().getTranslation().getDistance(visionMeasurement.getTranslation()))) {
+        m_visionOutliersRejected++;
+        SmartDashboard.putNumber("Vision/Outliers Rejected", m_visionOutliersRejected);
+        return false;
+      }
+
+      // Trust the measurement for how good it actually is: multi-tag solutions
+      // and clean, close solves move the estimate more than marginal ones.
+      int targetsUsed = est.targetsUsed == null ? 1 : Math.max(1, est.targetsUsed.size());
+      boolean multiTag = est.strategy == PoseStrategy.MULTI_TAG_PNP_ON_COPROCESSOR;
+      double[] stddevs =
+          VisionFusion.measurementStdDevs(targetsUsed, best.getPoseAmbiguity(), dist, multiTag);
       m_poseEstimator.addVisionMeasurement(
           visionMeasurement,
           est.timestampSeconds,
-          VecBuilder.fill(0.5, 0.5, 0.5)
-      );
+          VecBuilder.fill(stddevs[0], stddevs[1], stddevs[2]));
       m_fieldHeadingSource = "VISION FUSED";
     }
 
-    // Mark that vision was used this loop
+    m_lastVisionRotation = visionMeasurement.getRotation();
     m_lastVisionFuseTime = Timer.getFPGATimestamp();
     SmartDashboard.putString("Vision/Last Accepted Camera", cameraName);
     return true;
+  }
+
+  /**
+   * Solves the robot pose for one captured frame. Multi-tag PNP (when the
+   * camera provides it) gives the strongest heading solution; otherwise the
+   * tag closest to the current pose estimate is used.
+   */
+  private Optional<EstimatedRobotPose> solveCameraPose(
+      PhotonPoseEstimator cameraEstimator, PhotonPipelineResult result) {
+    Optional<EstimatedRobotPose> estOpt = cameraEstimator.estimateCoprocMultiTagPose(result);
+    if (estOpt.isEmpty()) {
+      estOpt = cameraEstimator.estimateClosestToReferencePose(result, new Pose3d(getPose()));
+    }
+    return estOpt;
   }
 
   private static boolean isFinite(Pose2d pose) {
@@ -229,13 +315,24 @@ public class DriveSubsystem extends SubsystemBase {
         && Double.isFinite(pose.getRotation().getRadians());
   }
 
+  /**
+   * Returns the gyroscope's robot heading in the WPILib convention
+   * (counter-clockwise positive). This is the primary heading sensor fed to the
+   * pose estimator every loop; the estimator fuses its angle deltas with wheel
+   * odometry and corrects its drift with vision.
+   *
+   * @return the gyro heading
+   */
   public Rotation2d getGyroRotation() {
       if (m_isSim) {
-        // Heading integrated from the simulated swerve modules (CCW positive),
-        // taking the place of the navX in the pose estimator.
-        return m_simRobotPose.getRotation();
+        // The simulated navX is a real sensor model (bias + noise) integrated
+        // from the true chassis yaw rate - not the ground-truth angle - so the
+        // estimator has to handle gyro drift here just like on the real robot.
+        return Rotation2d.fromDegrees(m_simGyro.getAngleDegrees());
       }
-      return Rotation2d.fromDegrees(-m_gyro.getAngle());
+      // navX yaw is clockwise-positive; WPILib headings are counter-clockwise
+      // positive. kGyroReversed flips the sense for inverted board mounting.
+      return Rotation2d.fromDegrees(m_gyro.getAngle() * (DriveConstants.kGyroReversed ? 1.0 : -1.0));
   }
 
   /** Constructor - Creates a new DriveSubsystem. */
@@ -261,15 +358,16 @@ public class DriveSubsystem extends SubsystemBase {
           e.getStackTrace());
     }
 
-    m_oldLeftCameraEstimator = new PhotonPoseEstimator(
+    // PhotonVision 2026: the strategy-taking constructor and update() are
+    // deprecated for removal; the estimation method called per frame selects
+    // the strategy (see solveCameraPose).
+    m_backCameraEstimator = new PhotonPoseEstimator(
       visionSystem.getTagLayout(),
-      PoseStrategy.CLOSEST_TO_REFERENCE_POSE,
-      m_robotToCamera
+      m_robotToBackCamera
     );
-    m_frontCameraEstimator = new PhotonPoseEstimator(
+    m_sideCameraEstimator = new PhotonPoseEstimator(
       visionSystem.getTagLayout(),
-      PoseStrategy.CLOSEST_TO_REFERENCE_POSE,
-      m_robotToFrontCamera
+      m_robotToSideCamera
     );
 
     // Prefer a trustworthy camera pose at startup. If none is available, seed
@@ -467,20 +565,25 @@ public class DriveSubsystem extends SubsystemBase {
   /**
    * Resets the odometry to the specified pose.
    *
+   * <p>This is the "the robot is now at this pose" signal. PathPlanner calls it
+   * at autonomous start with the authored start pose (translation AND rotation,
+   * already mirrored for the alliance); on the real robot the driver physically
+   * places the robot there first. The full pose is authoritative: WPILib's
+   * odometry offsets the gyro internally, so the reset heading never needs to
+   * match the raw gyro reading, and discarding the rotation would leave the
+   * robot disagreeing with the path it is about to follow.
+   *
    * @param pose The pose to which to set the odometry.
    */
   public void resetOdometry(Pose2d pose) {
     if (m_isSim) {
       // On the real robot the driver physically places the robot at the start
-      // of the auto; in simulation we move the ground-truth pose instead so
-      // PathPlanner starts from its authored pose.
-      m_simRobotPose = new Pose2d(pose.getTranslation(), m_simRobotPose.getRotation());
+      // of the auto; in simulation we move the ground-truth pose instead -
+      // translation AND rotation - so the physics, the vision simulation and
+      // the estimator all agree with where the robot actually is.
+      m_simRobotPose = pose;
     }
-    // PathPlanner may reset translation at the beginning of an auto, but its
-    // authored rotation must not replace the vision/alliance-established heading.
-    resetOdometryFromKnownFieldPose(
-        new Pose2d(pose.getTranslation(), getPose().getRotation()),
-        m_fieldHeadingSource);
+    resetOdometryFromKnownFieldPose(pose, "ODOMETRY RESET");
   }
 
   private void resetOdometryFromKnownFieldPose(Pose2d pose, String source) {
@@ -493,6 +596,11 @@ public class DriveSubsystem extends SubsystemBase {
             m_rearRight.getPosition()
         },
         pose);
+    // The heading-aware vision solvers interpolate the field heading to each
+    // frame's capture time; a pose reset discontinues that series.
+    double now = Timer.getFPGATimestamp();
+    m_backCameraEstimator.resetHeadingData(now, pose.getRotation());
+    m_sideCameraEstimator.resetHeadingData(now, pose.getRotation());
     m_fieldHeadingSource = source;
   }
 
@@ -733,15 +841,17 @@ public class DriveSubsystem extends SubsystemBase {
   }
 
   /**
-   * Returns the turn rate of the robot.
+   * Returns the turn rate of the robot in degrees per second
+   * (counter-clockwise positive), matching {@link #getGyroRotation()}.
    *
    * @return The turn rate of the robot, in degrees per second
    */
   public double getTurnRate() {
     if (m_isSim) {
-      return Math.toDegrees(m_simOmegaRadPerSecond);
+      return m_simGyro.getRateDegreesPerSecond();
     }
-    return m_gyro.getRate() * (DriveConstants.kGyroReversed ? -1.0 : 1.0);
+    // Same sign convention as getGyroRotation(): navX rates are clockwise-positive.
+    return m_gyro.getRate() * (DriveConstants.kGyroReversed ? 1.0 : -1.0);
   }
 
   /** * Returns the current robot-relative chassis speeds
@@ -759,30 +869,29 @@ public class DriveSubsystem extends SubsystemBase {
   /** Corrects the field pose from a high-confidence vision result. */
   public boolean correctTranslationFromVision() {
       // Do not short-circuit, so either camera can provide the correction.
-      return correctTranslationFromCamera(
-          "GoodCamera_OldLeft", m_oldLeftCamera, m_oldLeftCameraEstimator)
-          | correctTranslationFromCamera(
-              "FrontCamera", m_frontCamera, m_frontCameraEstimator);
+      return correctTranslationFromCamera(VisionConstants.kBackCameraName, m_backCameraEstimator)
+          | correctTranslationFromCamera(VisionConstants.kSideCameraName, m_sideCameraEstimator);
   }
 
   private boolean correctTranslationFromCamera(
-      String cameraName, PhotonCamera camera, PhotonPoseEstimator cameraEstimator) {
-      var result = camera.getLatestResult();
-      
-      // Safety shield: Reject if there are no targets
-      if (!result.hasTargets()) return false;
+      String cameraName, PhotonPoseEstimator cameraEstimator) {
+      // Re-solve from the most recent captured frame (taken in by the single
+      // once-per-loop intake). Draining the camera queue here would steal the
+      // frames the fusion path is supposed to see.
+      PhotonPipelineResult result = m_latestFrameByCamera.get(cameraName);
+      if (result == null || !result.hasTargets()) return false;
 
       var best = result.getBestTarget();
-      
+
       // Strict Ambiguity Filter: Only seed if the calculation is highly precise
-      if (best.getPoseAmbiguity() > 0.15 && best.getPoseAmbiguity() != -1) return false;
+      if (best.getPoseAmbiguity() > 0.15 && best.getPoseAmbiguity() >= 0.0) return false;
 
       // Distance Guard: Don't seed from completely across the stadium floor
       double dist = best.getBestCameraToTarget().getTranslation().getNorm();
-      if (!Double.isFinite(dist) || dist > 4.0 || dist < 0.22) return false;
+      if (!Double.isFinite(dist) || dist > 4.0
+          || dist < VisionFusion.kMinCameraToTagDistanceMeters) return false;
 
-      cameraEstimator.setReferencePose(getPose());
-      var update = cameraEstimator.update(result);
+      var update = solveCameraPose(cameraEstimator, result);
       if (update.isPresent()) {
           Pose2d visionPose = update.get().estimatedPose.toPose2d();
           if (!isFinite(visionPose)) return false;
@@ -859,8 +968,9 @@ public class DriveSubsystem extends SubsystemBase {
    * Steps all four module physics models and integrates the resulting measured
    * chassis speed into the ground-truth robot pose. The pose estimator then
    * consumes the same module states (through the simulated encoders) and the
-   * integrated heading (through {@link #getGyroRotation()}), so estimation and
-   * ground truth track each other exactly as they would on the real robot.
+   * simulated gyro (through {@link #getGyroRotation()}), so estimation and
+   * ground truth track each other just like on the real robot - modulo the
+   * gyro's simulated drift and the vision corrections that reject it.
    */
   @Override
   public void simulationPeriodic() {
@@ -882,6 +992,11 @@ public class DriveSubsystem extends SubsystemBase {
         m_rearLeft.getState(),
         m_rearRight.getState());
     m_simOmegaRadPerSecond = measuredSpeeds.omegaRadiansPerSecond;
+
+    // 2b. Step the simulated gyro: it integrates the true yaw rate with its
+    //     bias and noise, so it drifts like the real navX and the estimator's
+    //     vision fusion gets to prove it can reject that drift.
+    m_simGyro.update(Math.toDegrees(measuredSpeeds.omegaRadiansPerSecond), dt);
 
     // 3. Integrate ground-truth pose (exponential update, same math as the
     //    pose estimator's update step).

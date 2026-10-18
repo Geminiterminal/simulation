@@ -60,6 +60,9 @@ public final class Constants {
     public static final int kFrontRightTurningCanId = 12;
     public static final int kRearRightTurningCanId = 10;
 
+    // Flip when the navX is mounted inverted (rotated 180 degrees about the
+    // robot's z axis). Both the gyro heading and the gyro rate sign follow
+    // this flag so they can never disagree with each other.
     public static final boolean kGyroReversed = false;
   }
 
@@ -253,6 +256,24 @@ public final class Constants {
     public static final double kDeployArmStowedAngleRad = Units.degreesToRadians(0.0);
     public static final double kDeployArmDeployedAngleRad = Units.degreesToRadians(100.0);
     public static final double kDeployArmMaxAngleRad = Units.degreesToRadians(105.0);
+
+    // ------------------------------------------------------------------
+    // Simulated gyroscope (the navX MXP's stand-in).
+    //
+    // The gyroscope is the primary heading sensor: the pose estimator fuses
+    // its angle deltas with wheel odometry and corrects the accumulated drift
+    // with vision. A real navX has a small zero-rate bias and angle noise, so
+    // the simulated one does too - otherwise the simulation would hide every
+    // heading-estimation problem the real robot can have. See SimulatedGyro.
+    // ------------------------------------------------------------------
+    /** Constant zero-rate bias: 0.02 deg/s ~ 1.2 deg/min of drift. */
+    public static final double kSimGyroDriftDegreesPerSecond = 0.02;
+
+    /** White-noise sigma on the reported yaw rate. */
+    public static final double kSimGyroNoiseDegreesPerSecond = 0.02;
+
+    /** Seed for the gyro noise generator (keeps simulation runs repeatable). */
+    public static final long kSimGyroRandomSeed = 2026L;
 
     // ------------------------------------------------------------------
     // Simulation runtime
