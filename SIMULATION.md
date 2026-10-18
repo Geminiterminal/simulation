@@ -7,7 +7,7 @@ Simulation* model combined with each vendor's official simulation support:
 | Layer | Library | What it emulates |
 |-------|---------|------------------|
 | Swerve module motors | WPILib `DCMotorSim` + REVLib `SparkMaxSim` | NEO motor physics (voltage/current/speed), SPARK MAX closed loops (velocity P+FF, position PID with wrap), encoder feedback, current limiting |
-| Chassis | WPILib kinematics integration | Ground-truth pose from measured wheel states; simulated gyro replaces the navX |
+| Chassis | WPILib kinematics integration | Ground-truth pose from measured wheel states; a `SimulatedGyro` sensor model (bias + noise) replaces the navX |
 | Shooter flywheels | WPILib `FlywheelSim` + REVLib `SparkMaxSim` | Flywheel MOI, spin-up time, RPM feedback |
 | Feeder & intake roller | WPILib `DCMotorSim` + Phoenix 6 `TalonFXSimState` | Kraken X60 physics; TalonFX closed loops run in Phoenix's own sim |
 | Intake deploy arm | WPILib `SingleJointedArmSim` + REVLib `SparkFlexSim` | Arm gravity, gearing, MAXMotion profiled moves, `Mechanism2d` widget |
@@ -83,6 +83,71 @@ The simulated driver station is kept in sync with the robot, so
 `DriverStation.getAlliance()` reports the same alliance the robot code is
 using. On the real robot the alliance comes from the FMS and cannot be
 changed - the toggle and the chooser are simulation-only.
+
+## Heading and pose estimation
+
+Heading (and full pose) estimation fuses every available sensor through one
+pipeline:
+
+| Sensor | What it contributes | Where |
+|---|---|---|
+| Gyroscope (navX MXP) | Latency-free rotation between vision frames; the estimator trusts its angle deltas over wheel rotation | `getGyroRotation()` every loop → `SwerveDrivePoseEstimator.update` |
+| Wheel odometry (4 swerve modules) | Translation between vision frames | `MAXSwerveModule.getPosition()` → the same estimator update |
+| Vision (2 PhotonVision cameras) | Absolute field pose (translation AND heading), timestamped at image capture | `getAllUnreadResults()` → `VisionFusion` gates → `addVisionMeasurement` |
+| PathPlanner start pose | Authoritative full pose (translation AND rotation) at auto start | `resetOdometry` |
+| Gyro → vision feedback | The estimated field heading is fed back to the camera pipelines (`addHeadingData`) every loop so heading-aware PhotonVision solvers can use it | `addPhotonVisionMeasurement` |
+
+How the fusion stays accurate, stable and smooth:
+
+- **One capture, one measurement.** Frames are drained with
+  `getAllUnreadResults()` exactly once per loop per camera and stamped with
+  their capture time, so the estimator latency-compensates each measurement to
+  the moment the image was taken. A per-camera timestamp guard
+  (`VisionFusion.shouldProcessFrame`) makes double fusion impossible even if a
+  frame is redelivered.
+- **Trust scales with quality.** `VisionFusion.measurementStdDevs` turns
+  ambiguity, camera-to-tag distance and the number of tags used into the
+  standard deviations handed to the estimator: a clean multi-tag solve moves
+  the estimate firmly, a marginal single-tag solve only nudges it. Ambiguous
+  frames (ambiguity > 0.2) and degenerate near-field solves (< 0.22 m) are
+  dropped before any pose math runs. When the camera provides a multi-tag PNP
+  result it is used directly (strongest heading solution); otherwise the tag
+  closest to the current estimate is used.
+- **Outliers are rejected, drift is corrected.** After the initial seed, a
+  measurement more than 45° / 1.5 m away from the estimate is treated as a
+  glitch and discarded; measurements inside that window fuse normally - which
+  is exactly what pulls the heading back after gyro drift.
+- **Seeding is a one-time reset, everything after is a smooth update.** Until
+  vision has established a field pose the translation prior is meaningless,
+  so the first good solution resets the full pose (`VISION INITIAL POSE`).
+  From then on every correction is Kalman-scaled - the heading never snaps.
+- **Odometry resets honor the full authored pose.** `resetOdometry(pose)` is
+  "the robot is now at this pose": translation AND rotation, in the estimator
+  and (in simulation) in the ground truth. WPILib's odometry offsets the gyro
+  internally, so a reset heading never needs to match the raw gyro reading.
+  An earlier workaround kept the previous heading across resets; at auto start
+  that left the robot disagreeing with the path's authored start rotation, so
+  PathPlanner saw a huge rotation error and spun the robot. The root cause was
+  the reset never establishing one consistent heading truth - not the
+  controller gains.
+
+Useful dashboard signals while diagnosing heading:
+`Sim/Pose Estimate Error Heading (deg)` (estimate vs. ground truth),
+`Field Heading Source`, `Vision Active`, `Vision/Outliers Rejected`, and
+`Gyro Rotation Used`.
+
+### The simulated gyro is a sensor, not the truth
+
+In simulation the gyro is a `SimulatedGyro` model: the true yaw rate plus a
+small zero-rate bias (0.02°/s ≈ 1.2°/min) and rate noise, integrated over
+time (see `SimulationConstants`). It drifts like a real navX, so the vision
+fusion gets to prove it rejects that drift. Watch
+`Sim/Pose Estimate Error Heading (deg)` in the sim GUI: it grows slowly while
+no tags are visible and converges back within a couple of frames as soon as a
+camera sees tags again. Resetting the simulated robot (auto start, alliance
+change) does not snap the gyro - the estimator's gyro offset absorbs the
+difference, exactly like when the real robot is carried to a new starting
+spot.
 
 ## Autonomous path tuning in Elastic Dashboard
 
@@ -195,10 +260,25 @@ in `Constants.VisionConstants`. Sources of each value:
 
 ## Unit tests
 
-`./gradlew test` runs `SimulationPhysicsTest`, which sanity-checks the physics
-calibration (drive free speed ≈ 4.46 m/s vs 4.8 m/s cap, spin-up times,
-flywheel settling, arm travel range). If a phyiscal change breaks the
-calibration the tests flag it.
+`./gradlew test` runs, without HAL or vendor libraries:
+
+- `SimulationPhysicsTest` - sanity-checks the physics calibration (drive free
+  speed ≈ 4.46 m/s vs. 4.8 m/s cap, spin-up times, flywheel settling, arm
+  travel range). If a physical change breaks the calibration the tests flag it.
+- `VisionFusionTest`, `SimulatedGyroTest` - pin the vision measurement policy
+  (de-duplication, quality gates, outlier rejection, trust scaling) and the
+  simulated gyro sensor model.
+- `HeadingFusionSimulationTest` - a closed-loop heading/pose-estimation
+  simulation (drifting gyro + noisy latency-stamped vision through the same
+  pipeline the robot runs): heading accuracy through arcs and in-place turns,
+  gyro-drift rejection after vision outages, jump-free heading updates, and
+  duplicate-frame handling.
+
+The same heading scenarios are also mirrored in pure Python
+(`tests/test_heading_estimation.py`), together with the auto-start reset
+regression ("the authored start rotation is authoritative"). Run them without
+WPILib via `python3 -m unittest discover -s tests`; they also check that the
+Python mirror's constants still match `VisionFusion.java`.
 
 ## Known limitations (and upgrade path)
 
@@ -210,8 +290,9 @@ calibration the tests flag it.
 - Rotational inertia of the chassis emerges from the per-corner mass model
   rather than the MOI constant directly (rotational response may be ~10–20%
   softer than the real robot).
-- The simulated gyro is noise-free and never drifts — real navX drift won't be
-  reproduced.
+- The simulated gyro has bias and rate noise but no axis cross-coupling, no
+  temperature drift and no latency; real navX behavior is close but not
+  identical (tune `SimulationConstants.kSimGyro*` to bracket it).
 - Game-piece (fuel) pickup/scoring is not simulated.
 
 ## Troubleshooting signs/units
