@@ -196,14 +196,16 @@ public class MAXSwerveModule {
     m_turnPhysicsSim.update(dtSeconds);
 
     // 3. Feed the resulting mechanism velocities back to the emulated SPARKs.
-    // iterate() expects motor velocity in RPM for the primary drive encoder
-    // and azimuth RPM for the turning absolute encoder.
-    double driveMotorRPM = m_drivePhysicsSim.getAngularVelocityRPM()
-        * SimulationConstants.kDriveGearRatio;
-    double turnAzimuthRPM = m_turnPhysicsSim.getAngularVelocityRPM();
-
-    m_drivingSparkSim.iterate(driveMotorRPM, busVoltage, dtSeconds);
-    m_turningSparkSim.iterate(turnAzimuthRPM, busVoltage, dtSeconds);
+    //    iterate() expects velocity in the encoder's configured (converted)
+    //    units: drive encoder = meters/second at the wheel, turning absolute
+    //    encoder = radians/second of the module azimuth.
+    m_drivingSparkSim.iterate(
+        m_drivePhysicsSim.getAngularVelocityRadPerSec()
+            * SimulationConstants.kWheelRadiusMeters,
+        busVoltage, dtSeconds);
+    m_turningSparkSim.iterate(
+        m_turnPhysicsSim.getAngularVelocityRadPerSec(),
+        busVoltage, dtSeconds);
   }
 
   /** Simulated stator current draw of both module motors, in amps (0 on the real robot). */

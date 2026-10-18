@@ -58,6 +58,9 @@ import org.photonvision.targeting.PhotonPipelineResult;
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
       "PathPlanner Commanded Omega (rad/s)";
+  private final PIDController m_pathXFeedback = new PIDController(2.5, 0.0, 0.0);
+  private final PIDController m_pathYFeedback = new PIDController(2.5, 0.0, 0.0);
+  private final PIDController m_pathRotationFeedback = new PIDController(4.0, 0.0, 0.0);
   private Pose2d m_pathTargetPose;
   private boolean m_isFollowingPath = false;
 
@@ -471,8 +474,8 @@ public class DriveSubsystem extends SubsystemBase {
             this::getRobotRelativeSpeeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
             this::driveRobotRelative,      // Consumer<ChassisSpeeds> for output
             new PPHolonomicDriveController( // PPHolonomicController is the built in path following controller for holonomic drive trains
-                    new PIDConstants(AutoTuning.translationP(), AutoTuning.translationI(), AutoTuning.translationD()),
-                    new PIDConstants(AutoTuning.rotationP(), AutoTuning.rotationI(), AutoTuning.rotationD())
+                    new PIDConstants(0.0, 0.0, 0.0), // Feedback is supplied by live dashboard-tuned PIDs below
+                    new PIDConstants(0.0, 0.0, 0.0)
             ),
             config, // The robot configuration
             () -> {
@@ -486,6 +489,14 @@ public class DriveSubsystem extends SubsystemBase {
     );
     }
     
+    // PathPlanner's feedback callbacks let the PID gains be changed live from
+    // Elastic without rebuilding AutoBuilder. Feed-forward from the authored
+    // trajectory remains PathPlanner's responsibility; these controllers add
+    // field-relative pose-error correction.
+    m_pathRotationFeedback.enableContinuousInput(-Math.PI, Math.PI);
+    PPHolonomicDriveController.overrideXYFeedback(
+        this::calculatePathXFeedback, this::calculatePathYFeedback);
+    PPHolonomicDriveController.overrideRotationFeedback(this::calculatePathRotationFeedback);
     PathPlannerLogging.setLogTargetPoseCallback(pose -> m_pathTargetPose = pose);
     PathPlannerLogging.setLogActivePathCallback(poses -> {
       m_isFollowingPath = !poses.isEmpty();
@@ -505,6 +516,36 @@ public class DriveSubsystem extends SubsystemBase {
     if (m_isSim) {
       SmartDashboard.putData("Field", m_simField);
     }
+  }
+
+  private void updatePathFeedbackGains() {
+    double kp = AutoTuning.translationP();
+    double ki = AutoTuning.translationI();
+    double kd = AutoTuning.translationD();
+    m_pathXFeedback.setPID(kp, ki, kd);
+    m_pathYFeedback.setPID(kp, ki, kd);
+    m_pathRotationFeedback.setPID(
+        AutoTuning.rotationP(), AutoTuning.rotationI(), AutoTuning.rotationD());
+  }
+
+  private double calculatePathXFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    return m_pathXFeedback.calculate(getPose().getX(), m_pathTargetPose.getX());
+  }
+
+  private double calculatePathYFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    return m_pathYFeedback.calculate(getPose().getY(), m_pathTargetPose.getY());
+  }
+
+  private double calculatePathRotationFeedback() {
+    if (m_pathTargetPose == null) return 0.0;
+    updatePathFeedbackGains();
+    Rotation2d targetHeading = getRotationTargetOverride().orElse(m_pathTargetPose.getRotation());
+    return m_pathRotationFeedback.calculate(
+        getPose().getRotation().getRadians(), targetHeading.getRadians());
   }
 
   private static final double kHeadingToleranceDeg = 2.0;
