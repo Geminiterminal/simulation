@@ -6,8 +6,8 @@ Simulation* model combined with each vendor's official simulation support:
 
 | Layer | Library | What it emulates |
 |-------|---------|------------------|
-| Swerve module motors | WPILib `DCMotorSim` + REVLib `SparkMaxSim` | NEO motor physics (voltage/current/speed), SPARK MAX closed loops (velocity P+FF, position PID with wrap), encoder feedback, current limiting |
-| Chassis | WPILib kinematics integration | Ground-truth pose from measured wheel states; a `SimulatedGyro` sensor model (bias + noise) replaces the navX |
+| Swerve module motors | WPILib `DCMotorSim` + REVLib `SparkMaxSim` | NEO drive and NEO 550 steer motor physics (voltage/current/speed), SPARK MAX closed loops (velocity P+FF, position PID with wrap), encoder feedback, current limiting |
+| Chassis | WPILib kinematics integration | Kinematic field pose integrated from encoder-derived measured wheel states; a `SimulatedGyro` sensor model (bias + noise) replaces the navX. This pose is not independent of the drive encoder scale. |
 | Shooter flywheels | WPILib `FlywheelSim` + REVLib `SparkMaxSim` | Flywheel MOI, spin-up time, RPM feedback |
 | Feeder & intake roller | WPILib `DCMotorSim` + Phoenix 6 `TalonFXSimState` | Kraken X60 physics; TalonFX closed loops run in Phoenix's own sim |
 | Intake deploy arm | WPILib `SingleJointedArmSim` + REVLib `SparkFlexSim` | Arm gravity, gearing, MAXMotion profiled moves, `Mechanism2d` widget |
@@ -201,10 +201,13 @@ DataLog for run-to-run comparison):
 - `Auto/Commanded Vx/Vy/Omega` against `Auto/Measured Vx/Vy/Omega`. Large or
   sustained command/measurement gaps indicate saturation, a speed constraint,
   or actuator response rather than a path geometry problem.
-- In simulation, `Sim/Ground Truth X/Y/Heading` and `Sim/Pose Estimate Error
-  X/Y/Heading` separate controller/physics error from pose-estimator/vision
-  error. Also inspect `Vision Active` and `Field Heading Source` before blaming
-a controller gain for an incorrect field pose.
+- In simulation, `Sim/Ground Truth X/Y/Heading` is integrated from the measured
+  module encoder states. `Sim/Pose Estimate Error X/Y/Heading` can reveal
+  gyro/vision/estimator disagreement, but it is **not an independent check of
+  wheel scale or travel** because the pose streams share encoder-derived module
+  motion. Compare `Robot X/Y` and the final pose to the PathPlanner target and
+  the authored path distance as well. Inspect `Vision Active` and
+  `Field Heading Source` before blaming a controller gain for an incorrect pose.
 - For shoot-approach tuning, watch `Auto Distance Error (m)`, `Auto Distance
   Speed`, `Distance to Hub (m)`, and `Auto Aim Error (deg)`. Check battery voltage
   and module current when motion is unexpectedly slow.
@@ -212,10 +215,14 @@ a controller gain for an incorrect field pose.
 ### Repeatable trial-and-error loop
 
 1. Start with a short, representative path at low speed. Confirm the field
-   heading, start pose, alliance mirroring, and pose estimate are correct.
-2. Compare target pose to estimated pose. If estimate-to-ground-truth is poor,
-   fix odometry, gyro, camera, or module calibration first; PID tuning cannot
-   compensate for bad state estimation.
+   heading, start pose, alliance mirroring, and pose estimate are correct. For a
+   repeatable axis check, run `x changes` and then `xy` from their authored start
+   poses; compare final X/Y with the target, not only with the estimator.
+2. Compare target pose to estimated pose and `Sim/Ground Truth`. If
+   estimate-to-truth is poor, fix gyro, vision, or estimator issues first. If
+   both poses agree but both miss the target by the same scale, inspect wheel
+   conversion and drive/steer response: these pose streams currently share
+   encoder-derived module motion. PID tuning cannot compensate for bad units.
 3. Increase only translation P (or rotation P for heading error) in small steps
    until lag improves; back off if oscillation/overshoot appears. Keep I and D
    at zero at first.
@@ -224,6 +231,10 @@ a controller gain for an incorrect field pose.
 5. Repeat the exact path and starting conditions, then compare peak and RMS
    translation/heading error, settling time, and end pose. Save known-good
    values outside the live dashboard before another trial.
+
+See [`PATH_ACCURACY_AUDIT.md`](PATH_ACCURACY_AUDIT.md) for the confirmed REVLib
+simulation-unit defect, corrective code changes, a focused validation sequence,
+and a hardware-deployment checklist.
 
 The dashboard entries are bounded in code to avoid accidental extreme values.
 Dashboard edits are runtime tuning only; they do not update PathPlanner asset

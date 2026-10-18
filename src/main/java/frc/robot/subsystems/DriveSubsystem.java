@@ -898,9 +898,15 @@ public class DriveSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Auto/Commanded Vy (mps)", speeds.vyMetersPerSecond);
     SmartDashboard.putNumber("Auto/Commanded Omega (radps)", speeds.omegaRadiansPerSecond);
 
+    // PathPlanner supplies robot-relative speeds. Discretize over the robot
+    // loop before inverse kinematics so simultaneous translation and rotation
+    // do not introduce a repeatable lateral/longitudinal error each 20 ms.
+    ChassisSpeeds discretizedSpeeds =
+        ChassisSpeeds.discretize(speeds, SimulationConstants.kLoopPeriodSeconds);
+
     // Convert chassis speeds to module states
     SwerveModuleState[] states =
-        DriveConstants.kDriveKinematics.toSwerveModuleStates(speeds);
+        DriveConstants.kDriveKinematics.toSwerveModuleStates(discretizedSpeeds);
 
     // Desaturate to respect max speed
     SwerveDriveKinematics.desaturateWheelSpeeds(

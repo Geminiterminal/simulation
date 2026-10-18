@@ -19,6 +19,7 @@ import com.revrobotics.spark.SparkBase.ControlType;
 import com.revrobotics.spark.SparkBase.PersistMode;
 import com.revrobotics.spark.SparkBase.ResetMode;
 import com.revrobotics.spark.SparkLowLevel.MotorType;
+import com.revrobotics.sim.SparkAbsoluteEncoderSim;
 import com.revrobotics.sim.SparkMaxSim;
 import com.revrobotics.AbsoluteEncoder;
 import com.revrobotics.RelativeEncoder;
@@ -30,16 +31,15 @@ import frc.robot.Constants.SimulationConstants;
  * A single REV MAXSwerve module.
  *
  * <p>Simulation physics (WPILib "Physics Simulation" docs + REV's REVLib sim
- * pattern): each motor is modelled with a {@link DCMotorSim} whose plant is the
- * drive/steer gearbox and load inertia (see {@link SimulationConstants}). Every
- * loop the physics model is driven by the <em>emulated</em> SPARK output
- * (REVLib simulates the onboard velocity/position closed loops, MAXMotion,
- * current limits and voltage compensation), then the resulting mechanism
- * velocity is fed back through {@link SparkMaxSim#iterate}, which updates the
- * simulated encoders that the robot code reads and that the emulated closed
- * loops use as feedback. The result is a closed motor loop in simulation that
- * responds exactly like the real controller: same PID gains, same feedforward,
- * same acceleration and steady-state behavior.
+ * pattern): each motor is modelled by a {@link DCMotorSim} with the drive/steer
+ * reduction and mechanism-side inertia (see {@link SimulationConstants}). Each
+ * loop the plant is driven by the emulated SPARK output, and its mechanism
+ * velocity is converted back to the units expected by REVLib's simulation API:
+ * motor-shaft RPM for {@link SparkMaxSim#iterate}, plus output-shaft RPM for
+ * the steering through-bore encoder. REVLib then applies the configured encoder
+ * conversion factors and simulates the onboard feedback controller. Keeping
+ * these conversions explicit is essential: the drivetrain odometry consumes
+ * the simulated encoder readings, not the raw DCMotorSim state.
  */
 public class MAXSwerveModule {
   private final SparkMax m_drivingSpark;
@@ -56,17 +56,18 @@ public class MAXSwerveModule {
 
   // --- Simulation members (null on the real robot) ---
   private final DCMotor m_driveGearbox = DCMotor.getNEO(1);
-  private final DCMotor m_turnGearbox = DCMotor.getNEO(1);
+  private final DCMotor m_turnGearbox = DCMotor.getNeo550(1);
   private final SparkMaxSim m_drivingSparkSim;
   private final SparkMaxSim m_turningSparkSim;
+  private final SparkAbsoluteEncoderSim m_turningEncoderSim;
   private final DCMotorSim m_drivePhysicsSim;
   private final DCMotorSim m_turnPhysicsSim;
 
   /**
    * Constructs a MAXSwerveModule and configures the driving and turning motor,
    * encoder, and PID controller. This configuration is specific to the REV
-   * MAXSwerve Module built with NEOs, SPARKS MAX, and a Through Bore
-   * Encoder.
+   * MAXSwerve module with a NEO drive motor, NEO 550 steering motor, SPARK MAX
+   * controllers, and a Through Bore encoder.
    */
   public MAXSwerveModule(int drivingCANId, int turningCANId, double chassisAngularOffset) {
     m_drivingSpark = new SparkMax(drivingCANId, MotorType.kBrushless);
@@ -107,11 +108,13 @@ public class MAXSwerveModule {
               SimulationConstants.kSteerInertiaKgMetersSquared,
               SimulationConstants.kTurnGearRatio),
           m_turnGearbox);
+      m_turningEncoderSim = m_turningSparkSim.getAbsoluteEncoderSim();
     } else {
       m_drivingSparkSim = null;
       m_turningSparkSim = null;
       m_drivePhysicsSim = null;
       m_turnPhysicsSim = null;
+      m_turningEncoderSim = null;
     }
 
     m_chassisAngularOffset = chassisAngularOffset;
@@ -187,25 +190,51 @@ public class MAXSwerveModule {
     }
     double busVoltage = RobotController.getBatteryVoltage();
 
-    // 1. Apply the emulated controller output to the physics models.
+    // 1. Apply the emulated controller output to the physics models. The
+    //    MAXSwerve steering output rotates opposite to its motor; the absolute
+    //    encoder is inverted in Configs to restore the WPILib module-angle sign.
     m_drivePhysicsSim.setInputVoltage(m_drivingSparkSim.getAppliedOutput() * busVoltage);
-    m_turnPhysicsSim.setInputVoltage(m_turningSparkSim.getAppliedOutput() * busVoltage);
+    m_turnPhysicsSim.setInputVoltage(-m_turningSparkSim.getAppliedOutput() * busVoltage);
 
-    // 2. Step physics.
+    // 2. Step physics. The DCMotorSim output is the mechanism-side angular
+    //    velocity because the gear reduction was included in its plant model.
     m_drivePhysicsSim.update(dtSeconds);
     m_turnPhysicsSim.update(dtSeconds);
 
-    // 3. Feed the resulting mechanism velocities back to the emulated SPARKs.
-    //    iterate() expects velocity in the encoder's configured (converted)
-    //    units: drive encoder = meters/second at the wheel, turning absolute
-    //    encoder = radians/second of the module azimuth.
+    double driveWheelRadPerSec = m_drivePhysicsSim.getAngularVelocityRadPerSec();
+    double turnMechanismRadPerSec = m_turnPhysicsSim.getAngularVelocityRadPerSec();
+
+    // 3. SparkSim.iterate expects motor-shaft RPM, before the configured encoder
+    //    conversion factor is applied. For the drive's integrated encoder,
+    //    converting wheel rad/s -> motor RPM here lets the configured
+    //    circumference / reduction / 60 factor yield wheel m/s exactly once.
     m_drivingSparkSim.iterate(
-        m_drivePhysicsSim.getAngularVelocityRadPerSec()
-            * SimulationConstants.kWheelRadiusMeters,
+        mechanismRadiansPerSecondToMotorRpm(
+            driveWheelRadPerSec, SimulationConstants.kDriveGearRatio),
         busVoltage, dtSeconds);
+
+    // The SPARK model also needs motor-shaft RPM for its current/output model.
+    // The negative signed reduction represents the MAXSwerve steering gear's
+    // direction reversal. The through-bore encoder is on the module output, so
+    // simulate it separately at mechanism RPM; its configured inversion then
+    // maps that raw direction back to positive WPILib module rotation.
     m_turningSparkSim.iterate(
-        m_turnPhysicsSim.getAngularVelocityRadPerSec(),
+        mechanismRadiansPerSecondToMotorRpm(
+            turnMechanismRadPerSec, -SimulationConstants.kTurnGearRatio),
         busVoltage, dtSeconds);
+    m_turningEncoderSim.iterate(
+        radiansPerSecondToRpm(turnMechanismRadPerSec), dtSeconds);
+  }
+
+  /** Converts an output-shaft angular velocity to motor-shaft RPM. */
+  static double mechanismRadiansPerSecondToMotorRpm(
+      double mechanismRadiansPerSecond, double signedGearRatio) {
+    return radiansPerSecondToRpm(mechanismRadiansPerSecond * signedGearRatio);
+  }
+
+  /** Converts angular velocity to unconverted encoder RPM. */
+  static double radiansPerSecondToRpm(double radiansPerSecond) {
+    return radiansPerSecond * 60.0 / (2.0 * Math.PI);
   }
 
   /** Simulated stator current draw of both module motors, in amps (0 on the real robot). */
