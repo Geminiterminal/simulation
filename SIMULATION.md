@@ -182,13 +182,15 @@ at a time.
 | `Aim Distance kP`, `Aim Distance Max Speed (mps)`, `Aim Distance Tolerance (in)` | Auto-drive-to-shoot-distance behavior | Raise P for quicker approach, lower max speed for gentler approach; set tolerance to the acceptable shooting range. |
 | `Auto Aim Target Distance (in)` | Desired distance from robot to hub | Set to the geometry required by the shot. |
 
-The path PID defaults are 2.5 (translation) and 4.0 (rotation), with I and D
-at zero. Constraints entered in Elastic override the runtime pathfind commands
-and the module desaturation limit. **Normal PathPlanner autos use constraints
-embedded in each `.path`/`.auto` asset**, so change those route limits in the
-PathPlanner GUI and re-export when the authored trajectory itself needs a new
-speed or acceleration profile. The dashboard `Max Module Speed` still caps
-wheel outputs for those autos.
+The path PID defaults are 5.0 (translation) and 5.0 (rotation), with I and D
+at zero, evaluated directly on each trajectory step with zero pose-lag against
+`PathPlannerTrajectoryState` while reading live Elastic values on every loop.
+Constraints entered in Elastic override the runtime pathfind commands and the
+module desaturation limit (~4.46 m/s NEO free speed). **Normal PathPlanner autos
+use constraints embedded in each `.path`/`.auto` asset**, so change those route
+limits in the PathPlanner GUI and re-export when the authored trajectory itself
+needs a new speed or acceleration profile. The dashboard `Max Module Speed`
+still caps wheel outputs for those autos.
 
 ### Useful live telemetry
 
@@ -280,8 +282,9 @@ in `Constants.VisionConstants`. Sources of each value:
 `./gradlew test` runs, without HAL or vendor libraries:
 
 - `SimulationPhysicsTest` - sanity-checks the physics calibration (drive free
-  speed ≈ 4.46 m/s vs. 4.8 m/s cap, spin-up times, flywheel settling, arm
-  travel range). If a physical change breaks the calibration the tests flag it.
+  speed ≈ 4.46 m/s matching the SPARK MAX + NEO cap, spin-up times, flywheel
+  settling, arm travel range). If a physical change breaks the calibration the
+  tests flag it.
 - `VisionFusionTest`, `SimulatedGyroTest` - pin the vision measurement policy
   (de-duplication, quality gates, outlier rejection, trust scaling) and the
   simulated gyro sensor model.
@@ -328,11 +331,8 @@ Python mirror's constants still match `VisionFusion.java`.
 
 - PathPlanner assets must live in `src/main/deploy/pathplanner` (two n's),
   including `settings.json`, `autos/*.auto`, and `paths/*.path`. File names
-  are case-sensitive on Linux. The chooser lists only the three bundled autos;
-  failed configuration or auto loading reports an error and returns no command.
-- `blue right trench.path` is not bundled. The right-trench binding reports an
-  error and does nothing when requested until that route is authored/exported
-  from PathPlanner. Do not substitute a different route without checking it.
+  are case-sensitive on Linux. Both `blue left trench.path` and
+  `blue right trench.path` are bundled for teleop trench pathfinding.
 - Joystick axis/button/POV warnings mean the selected control profile is reading
   inputs absent from DS port 0. Map a controller (or a suitably configured
   simulated joystick) to that port and select the matching driver profile.

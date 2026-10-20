@@ -28,6 +28,7 @@ import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.wpilibj.simulation.DCMotorSim;
 import edu.wpi.first.wpilibj.simulation.FlywheelSim;
+import frc.robot.Constants.NeoMotorConstants;
 import frc.robot.Constants.SimulationConstants;
 import frc.robot.RobotContainer;
 
@@ -64,11 +65,12 @@ public class Shooter extends SubsystemBase {
     // --- Interpolation Map for Dynamic RPM ---
     private final InterpolatingDoubleTreeMap m_rpmMap = new InterpolatingDoubleTreeMap();
 
-    // --- REV PID + Feedforward gains ---
+    // --- REV PID + Feedforward gains (SPARK MAX + NEO 1.1) ---
+    // REVLib 2026 FeedForwardConfig.kV is in Volts / RPM when native RPM units are used.
     private static final double kP = 0.0009;
     private static final double kI = 0.0;
     private static final double kD = 0.0;
-    private static final double kF = 0.000175;
+    private static final double kV = 12.0 / NeoMotorConstants.kFreeSpeedRpm;
 
     private static final double FEEDER_TARGET_RPM = 4500.0;
     private static final double FEEDER_TARGET_RPS = FEEDER_TARGET_RPM / 60.0;
@@ -80,6 +82,7 @@ public class Shooter extends SubsystemBase {
     private static final double FEEDER_kV = 0.12;
 
     // --- Simulation members (null on the real robot) ---
+    private final DCMotor m_flywheelGearbox = DCMotor.getNEO(1);
     private SparkMaxSim m_frontSparkSim;
     private SparkMaxSim m_backSparkSim;
     private FlywheelSim m_frontPhysics;
@@ -98,20 +101,20 @@ public class Shooter extends SubsystemBase {
         flyConfig.idleMode(IdleMode.kCoast)
                  .inverted(false)
                  .smartCurrentLimit(60);
-        //         .closedLoopRampRate(0.4);
         flyConfig.closedLoop
-            .pid(kP, kI, kD)
-            .velocityFF(kF);
+            .pid(kP, kI, kD);
+        flyConfig.closedLoop.feedForward
+            .kV(kV);
 
         // --- Shooter Back Config (REV) ---
         SparkMaxConfig flyConfig2 = new SparkMaxConfig();
         flyConfig2.idleMode(IdleMode.kCoast)
                   .inverted(true)
                   .smartCurrentLimit(60);
-        //          .closedLoopRampRate(0.4);
         flyConfig2.closedLoop
-            .pid(kP, kI, kD)
-            .velocityFF(kF);
+            .pid(kP, kI, kD);
+        flyConfig2.closedLoop.feedForward
+            .kV(kV);
 
         // --- Shooter Front ---
         shooterFront = new SparkMax(SHOOTER_ID_1, MotorType.kBrushless);
@@ -139,20 +142,20 @@ public class Shooter extends SubsystemBase {
 
         // --- Simulation setup: physics models + controller emulators ---
         if (RobotBase.isSimulation()) {
-            m_frontSparkSim = new SparkMaxSim(shooterFront, DCMotor.getNEO(1));
-            m_backSparkSim = new SparkMaxSim(shooterBack, DCMotor.getNEO(1));
+            m_frontSparkSim = new SparkMaxSim(shooterFront, m_flywheelGearbox);
+            m_backSparkSim = new SparkMaxSim(shooterBack, m_flywheelGearbox);
             m_frontPhysics = new FlywheelSim(
                 LinearSystemId.createFlywheelSystem(
-                    DCMotor.getNEO(1),
+                    m_flywheelGearbox,
                     SimulationConstants.kShooterFlywheelMoiKgMetersSquared,
                     SimulationConstants.kShooterFlywheelGearRatio),
-                DCMotor.getNEO(1));
+                m_flywheelGearbox);
             m_backPhysics = new FlywheelSim(
                 LinearSystemId.createFlywheelSystem(
-                    DCMotor.getNEO(1),
+                    m_flywheelGearbox,
                     SimulationConstants.kShooterFlywheelMoiKgMetersSquared,
                     SimulationConstants.kShooterFlywheelGearRatio),
-                DCMotor.getNEO(1));
+                m_flywheelGearbox);
 
             // Phoenix 6 controllers simulate their onboard loops internally;
             // we supply the physics of the mechanism they are driving.
@@ -194,16 +197,16 @@ public class Shooter extends SubsystemBase {
         systemEnabled    = true;
         waitingForSpinUp = true;
 
-        frontController.setReference(m_fronttargetRPM, ControlType.kVelocity);
-        backController.setReference(m_backtargetRPM,   ControlType.kVelocity);
+        frontController.setSetpoint(m_fronttargetRPM, ControlType.kVelocity);
+        backController.setSetpoint(m_backtargetRPM,   ControlType.kVelocity);
 
         setFeederDutyCycle(0.0); // Hold feeder until up to speed (periodic handles handoff)
     }
 
     /** Spins up both shooter wheels without starting the feeder or conveyor. */
     public void spinUpToTargetPercentage(double targetPercentage) {
-        frontController.setReference(m_fronttargetRPM * targetPercentage, ControlType.kVelocity);
-        backController.setReference(m_backtargetRPM * targetPercentage, ControlType.kVelocity);
+        frontController.setSetpoint(m_fronttargetRPM * targetPercentage, ControlType.kVelocity);
+        backController.setSetpoint(m_backtargetRPM * targetPercentage, ControlType.kVelocity);
     }
 
     public void stopAll() {
@@ -310,7 +313,9 @@ public class Shooter extends SubsystemBase {
             return;
         }
         double dt = SimulationConstants.kLoopPeriodSeconds;
-        double busVoltage = RobotController.getBatteryVoltage();
+        double rawBusVoltage = RobotController.getBatteryVoltage();
+        double busVoltage =
+            (Double.isFinite(rawBusVoltage) && rawBusVoltage > 1.0) ? rawBusVoltage : 12.0;
 
         // Flywheels (SPARK MAX, encoder units are native RPM).
         m_frontPhysics.setInput(m_frontSparkSim.getAppliedOutput() * busVoltage);
@@ -336,16 +341,28 @@ public class Shooter extends SubsystemBase {
         SmartDashboard.putNumber("Sim/Shooter Back Velocity (RPM)", m_backPhysics.getAngularVelocityRPM());
     }
 
-    /** Total simulated stator current draw of the shooter, in amps. */
+    /** Total simulated positive battery current draw of the shooter, in amps. */
     public double getSimulatedCurrentDraw() {
         if (!RobotBase.isSimulation()) {
             return 0.0;
         }
-        return m_frontSparkSim.getMotorCurrent()
-            + m_backSparkSim.getMotorCurrent()
-            + DCMotor.getKrakenX60(1).getCurrent(
+        double frontSupply = m_frontSparkSim.getAppliedOutput() * m_frontSparkSim.getMotorCurrent();
+        double backSupply = m_backSparkSim.getAppliedOutput() * m_backSparkSim.getMotorCurrent();
+        double feederCurrent =
+            DCMotor.getKrakenX60(1).getCurrent(
                 m_feederPhysics.getAngularVelocityRadPerSec()
                     * SimulationConstants.kFeederGearRatio,
                 m_feederSimState.getMotorVoltage());
+        double total = 0.0;
+        if (Double.isFinite(frontSupply) && frontSupply > 0.0) {
+            total += frontSupply;
+        }
+        if (Double.isFinite(backSupply) && backSupply > 0.0) {
+            total += backSupply;
+        }
+        if (Double.isFinite(feederCurrent) && feederCurrent > 0.0) {
+            total += feederCurrent;
+        }
+        return total;
     }
 }
