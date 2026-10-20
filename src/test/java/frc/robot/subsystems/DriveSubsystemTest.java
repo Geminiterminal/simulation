@@ -8,6 +8,7 @@ import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.geometry.Twist2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
+import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.wpilibj.DriverStation;
 import frc.robot.Constants.DriveConstants;
 import frc.robot.Constants.FieldConstants;
@@ -80,33 +81,36 @@ class DriveSubsystemTest {
   }
 
   @Test
-  void driveSimulationConvertsWheelRateToMotorRpmBeforeEncoderScaling() {
+  void driveSimulationConvertsWheelRateToLinearMetersPerSecondForRevLib2026() {
     double wheelRadPerSecond = 7.5;
-    double motorRpm = MAXSwerveModule.mechanismRadiansPerSecondToMotorRpm(
-        wheelRadPerSecond, SimulationConstants.kDriveGearRatio);
-    double configuredEncoderMetersPerSecond = motorRpm
-        * (ModuleConstants.kWheelDiameterMeters * Math.PI
-            / SimulationConstants.kDriveGearRatio / 60.0);
+    double wheelMetersPerSecond =
+        MAXSwerveModule.wheelRadiansPerSecondToMetersPerSecond(wheelRadPerSecond);
+    // REVLib 2026 divides SparkSim.iterate's velocity by velocityConversionFactor to get motor RPM,
+    // then multiplies back by velocityConversionFactor when reporting encoder velocity.
+    double velocityConversionFactor =
+        ModuleConstants.kWheelDiameterMeters * Math.PI / SimulationConstants.kDriveGearRatio / 60.0;
+    double internalMotorRpm = wheelMetersPerSecond / velocityConversionFactor;
+    double reportedEncoderMetersPerSecond = internalMotorRpm * velocityConversionFactor;
 
-    assertEquals(wheelRadPerSecond * SimulationConstants.kWheelRadiusMeters,
-        configuredEncoderMetersPerSecond, EPSILON);
+    assertEquals(
+        wheelRadPerSecond * SimulationConstants.kWheelRadiusMeters,
+        reportedEncoderMetersPerSecond,
+        EPSILON);
   }
 
   @Test
-  void steeringSimulationModelsReverseGearAndOutputAbsoluteEncoder() {
-    double moduleRateRadPerSecond = 1.2;
-    // MAXSwerve reverses the steering output. The SPARK encoder config also
-    // inverts this raw through-bore signal to yield the WPILib module angle.
-    double mechanismRateRadPerSecond = -moduleRateRadPerSecond;
-    double motorRpm = MAXSwerveModule.mechanismRadiansPerSecondToMotorRpm(
-        mechanismRateRadPerSecond, -SimulationConstants.kTurnGearRatio);
-    double absoluteEncoderRawRpm =
-        MAXSwerveModule.radiansPerSecondToRpm(mechanismRateRadPerSecond);
-    double absoluteEncoderReportedRateRadPerSecond =
-        -absoluteEncoderRawRpm * (2.0 * Math.PI / 60.0);
+  void driveForceFeedforwardProjectionNegatesCleanlyWhenModuleOptimizes180Degrees() {
+    DCMotor neo = DCMotor.getNEO(1);
+    double offset = -Math.PI / 2.0;
+    double forwardVolts =
+        MAXSwerveModule.calculateDriveForceFeedforwardVolts(
+            neo, Rotation2d.fromRadians(offset), offset, 100.0, 0.0);
+    double flippedVolts =
+        MAXSwerveModule.calculateDriveForceFeedforwardVolts(
+            neo, Rotation2d.fromRadians(offset + Math.PI), offset, 100.0, 0.0);
 
-    assertTrue(motorRpm > 0.0, "positive module motion requires positive motor RPM");
-    assertEquals(moduleRateRadPerSecond, absoluteEncoderReportedRateRadPerSecond, EPSILON);
+    assertTrue(forwardVolts > 0.0, "forward force along wheel must produce positive voltage");
+    assertEquals(-forwardVolts, flippedVolts, EPSILON);
   }
 
   @Test

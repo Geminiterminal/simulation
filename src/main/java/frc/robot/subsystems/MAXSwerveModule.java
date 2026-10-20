@@ -4,6 +4,17 @@
 
 package frc.robot.subsystems;
 
+import com.revrobotics.AbsoluteEncoder;
+import com.revrobotics.RelativeEncoder;
+import com.revrobotics.sim.SparkAbsoluteEncoderSim;
+import com.revrobotics.sim.SparkMaxSim;
+import com.revrobotics.spark.ClosedLoopSlot;
+import com.revrobotics.spark.SparkBase.ControlType;
+import com.revrobotics.spark.SparkBase.PersistMode;
+import com.revrobotics.spark.SparkBase.ResetMode;
+import com.revrobotics.spark.SparkClosedLoopController;
+import com.revrobotics.spark.SparkLowLevel.MotorType;
+import com.revrobotics.spark.SparkMax;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.kinematics.SwerveModulePosition;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
@@ -12,34 +23,21 @@ import edu.wpi.first.math.system.plant.LinearSystemId;
 import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.simulation.DCMotorSim;
-
-import com.revrobotics.spark.SparkClosedLoopController;
-import com.revrobotics.spark.SparkMax;
-import com.revrobotics.spark.SparkBase.ControlType;
-import com.revrobotics.spark.SparkBase.PersistMode;
-import com.revrobotics.spark.SparkBase.ResetMode;
-import com.revrobotics.spark.SparkLowLevel.MotorType;
-import com.revrobotics.sim.SparkAbsoluteEncoderSim;
-import com.revrobotics.sim.SparkMaxSim;
-import com.revrobotics.AbsoluteEncoder;
-import com.revrobotics.RelativeEncoder;
-
 import frc.robot.Configs;
 import frc.robot.Constants.SimulationConstants;
 
 /**
- * A single REV MAXSwerve module.
+ * A single REV MAXSwerve module (SPARK MAX + NEO 1.1 drive, SPARK MAX + NEO 550 steer).
  *
- * <p>Simulation physics (WPILib "Physics Simulation" docs + REV's REVLib sim
- * pattern): each motor is modelled by a {@link DCMotorSim} with the drive/steer
- * reduction and mechanism-side inertia (see {@link SimulationConstants}). Each
- * loop the plant is driven by the emulated SPARK output, and its mechanism
- * velocity is converted back to the units expected by REVLib's simulation API:
- * motor-shaft RPM for {@link SparkMaxSim#iterate}, plus output-shaft RPM for
- * the steering through-bore encoder. REVLib then applies the configured encoder
- * conversion factors and simulates the onboard feedback controller. Keeping
- * these conversions explicit is essential: the drivetrain odometry consumes
- * the simulated encoder readings, not the raw DCMotorSim state.
+ * <p>Simulation physics (WPILib "Physics Simulation" + REVLib 2026 simulation API): each motor is
+ * modelled by a {@link DCMotorSim} with the drive/steer reduction and mechanism-side inertia (see
+ * {@link SimulationConstants}). Each loop the plant is driven by the emulated SPARK output, and its
+ * mechanism velocity is passed directly in the encoder's configured post-conversion units to REVLib:
+ * wheel linear velocity ({@code m/s}) for {@link SparkMaxSim#iterate} on the drive motor, and
+ * module angular velocity ({@code rad/s}) for both {@link SparkMaxSim#iterate} and
+ * {@link SparkAbsoluteEncoderSim#iterate} on the steer module. REVLib divides internally by the
+ * configured velocity conversion factor to compute motor RPM, integrates position, and emulates the
+ * onboard closed-loop firmware.
  */
 public class MAXSwerveModule {
   private final SparkMax m_drivingSpark;
@@ -54,7 +52,7 @@ public class MAXSwerveModule {
   private double m_chassisAngularOffset = 0;
   private SwerveModuleState m_desiredState = new SwerveModuleState(0.0, new Rotation2d());
 
-  // --- Simulation members (null on the real robot) ---
+  // --- Motor & simulation models ---
   private final DCMotor m_driveGearbox = DCMotor.getNEO(1);
   private final DCMotor m_turnGearbox = DCMotor.getNeo550(1);
   private final SparkMaxSim m_drivingSparkSim;
@@ -64,10 +62,9 @@ public class MAXSwerveModule {
   private final DCMotorSim m_turnPhysicsSim;
 
   /**
-   * Constructs a MAXSwerveModule and configures the driving and turning motor,
-   * encoder, and PID controller. This configuration is specific to the REV
-   * MAXSwerve module with a NEO drive motor, NEO 550 steering motor, SPARK MAX
-   * controllers, and a Through Bore encoder.
+   * Constructs a MAXSwerveModule and configures the driving and turning motor, encoder, and PID
+   * controller. This configuration is specific to the REV MAXSwerve module with a NEO drive motor,
+   * NEO 550 steering motor, SPARK MAX controllers, and a Through Bore encoder.
    */
   public MAXSwerveModule(int drivingCANId, int turningCANId, double chassisAngularOffset) {
     m_drivingSpark = new SparkMax(drivingCANId, MotorType.kBrushless);
@@ -82,9 +79,13 @@ public class MAXSwerveModule {
     // Apply the respective configurations to the SPARKS. Reset parameters before
     // applying the configuration to bring the SPARK to a known good state. Persist
     // the settings to the SPARK to avoid losing them on a power cycle.
-    m_drivingSpark.configure(Configs.MAXSwerveModule.drivingConfig, ResetMode.kResetSafeParameters,
+    m_drivingSpark.configure(
+        Configs.MAXSwerveModule.drivingConfig,
+        ResetMode.kResetSafeParameters,
         PersistMode.kPersistParameters);
-    m_turningSpark.configure(Configs.MAXSwerveModule.turningConfig, ResetMode.kResetSafeParameters,
+    m_turningSpark.configure(
+        Configs.MAXSwerveModule.turningConfig,
+        ResetMode.kResetSafeParameters,
         PersistMode.kPersistParameters);
 
     if (RobotBase.isSimulation()) {
@@ -96,18 +97,20 @@ public class MAXSwerveModule {
       // Physics models. LinearSystemId.createDCMotorSystem expects the load
       // inertia at the mechanism OUTPUT and the gearbox reduction; the
       // resulting model's position/velocity are at the output (wheel / module).
-      m_drivePhysicsSim = new DCMotorSim(
-          LinearSystemId.createDCMotorSystem(
-              m_driveGearbox,
-              SimulationConstants.kDriveWheelInertiaKgMetersSquared,
-              SimulationConstants.kDriveGearRatio),
-          m_driveGearbox);
-      m_turnPhysicsSim = new DCMotorSim(
-          LinearSystemId.createDCMotorSystem(
-              m_turnGearbox,
-              SimulationConstants.kSteerInertiaKgMetersSquared,
-              SimulationConstants.kTurnGearRatio),
-          m_turnGearbox);
+      m_drivePhysicsSim =
+          new DCMotorSim(
+              LinearSystemId.createDCMotorSystem(
+                  m_driveGearbox,
+                  SimulationConstants.kDriveWheelInertiaKgMetersSquared,
+                  SimulationConstants.kDriveGearRatio),
+              m_driveGearbox);
+      m_turnPhysicsSim =
+          new DCMotorSim(
+              LinearSystemId.createDCMotorSystem(
+                  m_turnGearbox,
+                  SimulationConstants.kSteerInertiaKgMetersSquared,
+                  SimulationConstants.kTurnGearRatio),
+              m_turnGearbox);
       m_turningEncoderSim = m_turningSparkSim.getAbsoluteEncoderSim();
     } else {
       m_drivingSparkSim = null;
@@ -130,7 +133,8 @@ public class MAXSwerveModule {
   public SwerveModuleState getState() {
     // Apply chassis angular offset to the encoder position to get the position
     // relative to the chassis.
-    return new SwerveModuleState(m_drivingEncoder.getVelocity(),
+    return new SwerveModuleState(
+        m_drivingEncoder.getVelocity(),
         new Rotation2d(m_turningEncoder.getPosition() - m_chassisAngularOffset));
   }
 
@@ -148,22 +152,56 @@ public class MAXSwerveModule {
   }
 
   /**
-   * Sets the desired state for the module.
+   * Sets the desired state for the module with zero additional force feedforward.
    *
    * @param desiredState Desired state with speed and angle.
    */
   public void setDesiredState(SwerveModuleState desiredState) {
+    setDesiredState(desiredState, 0.0, 0.0);
+  }
+
+  /**
+   * Sets the desired state for the module with robot-relative wheel force feedforwards from
+   * PathPlanner.
+   *
+   * <p>Projecting the 2D robot-relative force vector onto the optimized wheel direction guarantees
+   * exact sign invariance under both inverse-kinematics angle wrapping and 180-degree module
+   * state optimization flips.
+   *
+   * @param desiredState Desired state with speed and angle.
+   * @param robotRelativeForceXNewtons X component of robot-relative wheel force feedforward (N).
+   * @param robotRelativeForceYNewtons Y component of robot-relative wheel force feedforward (N).
+   */
+  public void setDesiredState(
+      SwerveModuleState desiredState,
+      double robotRelativeForceXNewtons,
+      double robotRelativeForceYNewtons) {
     // Apply chassis angular offset to the desired state.
     SwerveModuleState correctedDesiredState = new SwerveModuleState();
     correctedDesiredState.speedMetersPerSecond = desiredState.speedMetersPerSecond;
-    correctedDesiredState.angle = desiredState.angle.plus(Rotation2d.fromRadians(m_chassisAngularOffset));
+    correctedDesiredState.angle =
+        desiredState.angle.plus(Rotation2d.fromRadians(m_chassisAngularOffset));
 
     // Optimize the reference state to avoid spinning further than 90 degrees.
     correctedDesiredState.optimize(new Rotation2d(m_turningEncoder.getPosition()));
 
+    // Project 2D force vector onto the optimized chassis-relative wheel heading.
+    double arbFeedforwardVolts =
+        calculateDriveForceFeedforwardVolts(
+            m_driveGearbox,
+            correctedDesiredState.angle,
+            m_chassisAngularOffset,
+            robotRelativeForceXNewtons,
+            robotRelativeForceYNewtons);
+
     // Command driving and turning SPARKS towards their respective setpoints.
-    m_drivingClosedLoopController.setReference(correctedDesiredState.speedMetersPerSecond, ControlType.kVelocity);
-    m_turningClosedLoopController.setReference(correctedDesiredState.angle.getRadians(), ControlType.kPosition);
+    m_drivingClosedLoopController.setSetpoint(
+        correctedDesiredState.speedMetersPerSecond,
+        ControlType.kVelocity,
+        ClosedLoopSlot.kSlot0,
+        arbFeedforwardVolts);
+    m_turningClosedLoopController.setSetpoint(
+        correctedDesiredState.angle.getRadians(), ControlType.kPosition);
 
     m_desiredState = desiredState;
   }
@@ -179,8 +217,8 @@ public class MAXSwerveModule {
   }
 
   /**
-   * Steps the motor physics for this module. Called once per robot loop from
-   * {@link DriveSubsystem} in simulation only.
+   * Steps the motor physics for this module. Called once per robot loop from {@link DriveSubsystem}
+   * in simulation only.
    *
    * @param dtSeconds timestep in seconds
    */
@@ -188,60 +226,70 @@ public class MAXSwerveModule {
     if (!RobotBase.isSimulation()) {
       return;
     }
-    double busVoltage = RobotController.getBatteryVoltage();
+    double rawBusVoltage = RobotController.getBatteryVoltage();
+    double busVoltage =
+        (Double.isFinite(rawBusVoltage) && rawBusVoltage > 1.0) ? rawBusVoltage : 12.0;
 
-    // 1. Apply the emulated controller output to the physics models. The
-    //    MAXSwerve steering output rotates opposite to its motor; the absolute
-    //    encoder is inverted in Configs to restore the WPILib module-angle sign.
+    // 1. Apply the emulated controller output to the mechanism physics plants.
     m_drivePhysicsSim.setInputVoltage(m_drivingSparkSim.getAppliedOutput() * busVoltage);
-    m_turnPhysicsSim.setInputVoltage(-m_turningSparkSim.getAppliedOutput() * busVoltage);
+    m_turnPhysicsSim.setInputVoltage(m_turningSparkSim.getAppliedOutput() * busVoltage);
 
-    // 2. Step physics. The DCMotorSim output is the mechanism-side angular
-    //    velocity because the gear reduction was included in its plant model.
+    // 2. Step physics. Both DCMotorSim plants output mechanism-side angular
+    //    velocity (rad/s) because the gear reduction is embedded in each plant.
     m_drivePhysicsSim.update(dtSeconds);
     m_turnPhysicsSim.update(dtSeconds);
 
-    double driveWheelRadPerSec = m_drivePhysicsSim.getAngularVelocityRadPerSec();
-    double turnMechanismRadPerSec = m_turnPhysicsSim.getAngularVelocityRadPerSec();
+    double wheelSpeedMetersPerSec =
+        wheelRadiansPerSecondToMetersPerSecond(m_drivePhysicsSim.getAngularVelocityRadPerSec());
+    double moduleTurnRateRadPerSec = m_turnPhysicsSim.getAngularVelocityRadPerSec();
 
-    // 3. SparkSim.iterate expects motor-shaft RPM, before the configured encoder
-    //    conversion factor is applied. For the drive's integrated encoder,
-    //    converting wheel rad/s -> motor RPM here lets the configured
-    //    circumference / reduction / 60 factor yield wheel m/s exactly once.
-    m_drivingSparkSim.iterate(
-        mechanismRadiansPerSecondToMotorRpm(
-            driveWheelRadPerSec, SimulationConstants.kDriveGearRatio),
-        busVoltage, dtSeconds);
-
-    // The SPARK model also needs motor-shaft RPM for its current/output model.
-    // The negative signed reduction represents the MAXSwerve steering gear's
-    // direction reversal. The through-bore encoder is on the module output, so
-    // simulate it separately at mechanism RPM; its configured inversion then
-    // maps that raw direction back to positive WPILib module rotation.
-    m_turningSparkSim.iterate(
-        mechanismRadiansPerSecondToMotorRpm(
-            turnMechanismRadPerSec, -SimulationConstants.kTurnGearRatio),
-        busVoltage, dtSeconds);
-    m_turningEncoderSim.iterate(
-        radiansPerSecondToRpm(turnMechanismRadPerSec), dtSeconds);
+    // 3. REVLib 2026 SparkSim.iterate and SparkAbsoluteEncoderSim.iterate expect
+    //    post-conversion units matching the configured encoder conversion factors:
+    //    wheel linear speed (m/s) for drive, module angular rate (rad/s) for steer.
+    m_drivingSparkSim.iterate(wheelSpeedMetersPerSec, busVoltage, dtSeconds);
+    m_turningSparkSim.iterate(moduleTurnRateRadPerSec, busVoltage, dtSeconds);
+    m_turningEncoderSim.iterate(moduleTurnRateRadPerSec, dtSeconds);
   }
 
-  /** Converts an output-shaft angular velocity to motor-shaft RPM. */
-  static double mechanismRadiansPerSecondToMotorRpm(
-      double mechanismRadiansPerSecond, double signedGearRatio) {
-    return radiansPerSecondToRpm(mechanismRadiansPerSecond * signedGearRatio);
+  /** Converts wheel output angular rate (rad/s) to linear wheel speed (m/s) for SparkSim. */
+  static double wheelRadiansPerSecondToMetersPerSecond(double wheelRadiansPerSecond) {
+    return wheelRadiansPerSecond * SimulationConstants.kWheelRadiusMeters;
   }
 
-  /** Converts angular velocity to unconverted encoder RPM. */
-  static double radiansPerSecondToRpm(double radiansPerSecond) {
-    return radiansPerSecond * 60.0 / (2.0 * Math.PI);
+  /** Computes arbitrary drive voltage feedforward for a 2D robot-relative wheel force vector. */
+  static double calculateDriveForceFeedforwardVolts(
+      DCMotor gearbox,
+      Rotation2d optimizedEncoderAngle,
+      double chassisAngularOffsetRad,
+      double robotRelativeForceXNewtons,
+      double robotRelativeForceYNewtons) {
+    Rotation2d wheelDirection =
+        optimizedEncoderAngle.minus(Rotation2d.fromRadians(chassisAngularOffsetRad));
+    double forceAlongWheelNewtons =
+        robotRelativeForceXNewtons * wheelDirection.getCos()
+            + robotRelativeForceYNewtons * wheelDirection.getSin();
+    double motorTorqueNm =
+        (forceAlongWheelNewtons * SimulationConstants.kWheelRadiusMeters)
+            / SimulationConstants.kDriveGearRatio;
+    return gearbox.getVoltage(motorTorqueNm, 0.0);
   }
 
-  /** Simulated stator current draw of both module motors, in amps (0 on the real robot). */
+  /** Simulated positive battery supply current draw of both module motors, in amps. */
   public double getSimulatedCurrentDraw() {
     if (!RobotBase.isSimulation()) {
       return 0.0;
     }
-    return m_drivingSparkSim.getMotorCurrent() + m_turningSparkSim.getMotorCurrent();
+    double driveSupplyAmps =
+        m_drivingSparkSim.getAppliedOutput() * m_drivingSparkSim.getMotorCurrent();
+    double turnSupplyAmps =
+        m_turningSparkSim.getAppliedOutput() * m_turningSparkSim.getMotorCurrent();
+    double total = 0.0;
+    if (Double.isFinite(driveSupplyAmps) && driveSupplyAmps > 0.0) {
+      total += driveSupplyAmps;
+    }
+    if (Double.isFinite(turnSupplyAmps) && turnSupplyAmps > 0.0) {
+      total += turnSupplyAmps;
+    }
+    return total;
   }
 }

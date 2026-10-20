@@ -3,6 +3,7 @@ package frc.robot;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.math.util.Units;
+import frc.robot.Constants.DriveConstants;
 
 /**
  * Runtime autonomous tuning controls published through NetworkTables. Elastic
@@ -36,13 +37,13 @@ public final class AutoTuning {
   /** Publish defaults only when an entry does not already exist, preserving dashboard edits. */
   public static void publishDefaults() {
     putDefault(TARGET_DISTANCE_IN, 100.0);
-    putDefault(TRANSLATION_P, 2.5);
+    putDefault(TRANSLATION_P, 5.0);
     putDefault(TRANSLATION_I, 0.0);
     putDefault(TRANSLATION_D, 0.0);
-    putDefault(ROTATION_P, 4.0);
+    putDefault(ROTATION_P, 5.0);
     putDefault(ROTATION_I, 0.0);
     putDefault(ROTATION_D, 0.0);
-    putDefault(MAX_MODULE_SPEED, 4.8);
+    putDefault(MAX_MODULE_SPEED, DriveConstants.kMaxSpeedMetersPerSecond);
     putDefault(PATH_MAX_SPEED, 2.0);
     putDefault(PATH_MAX_ACCEL, 2.0);
     putDefault(PATH_MAX_ANGULAR_SPEED, 360.0);
@@ -64,14 +65,22 @@ public final class AutoTuning {
     return MathUtil.clamp(SmartDashboard.getNumber(key, fallback), min, max);
   }
 
-  public static double translationP() { return get(TRANSLATION_P, 2.5, 0.0, 20.0); }
+  public static double translationP() { return get(TRANSLATION_P, 5.0, 0.0, 20.0); }
   public static double translationI() { return get(TRANSLATION_I, 0.0, 0.0, 5.0); }
   public static double translationD() { return get(TRANSLATION_D, 0.0, 0.0, 10.0); }
-  public static double rotationP() { return get(ROTATION_P, 4.0, 0.0, 20.0); }
+  public static double rotationP() { return get(ROTATION_P, 5.0, 0.0, 20.0); }
   public static double rotationI() { return get(ROTATION_I, 0.0, 0.0, 5.0); }
   public static double rotationD() { return get(ROTATION_D, 0.0, 0.0, 10.0); }
-  public static double maxModuleSpeed() { return get(MAX_MODULE_SPEED, 4.8, 0.5, 4.8); }
-  public static double pathMaxSpeed() { return get(PATH_MAX_SPEED, 2.0, 0.2, 4.8); }
+  public static double maxModuleSpeed() {
+    return get(
+        MAX_MODULE_SPEED,
+        DriveConstants.kMaxSpeedMetersPerSecond,
+        0.5,
+        DriveConstants.kMaxSpeedMetersPerSecond);
+  }
+  public static double pathMaxSpeed() {
+    return get(PATH_MAX_SPEED, 2.0, 0.2, DriveConstants.kMaxSpeedMetersPerSecond);
+  }
   public static double pathMaxAcceleration() { return get(PATH_MAX_ACCEL, 2.0, 0.2, 8.0); }
   public static double pathMaxAngularSpeedRadPerSec() {
     return Units.degreesToRadians(get(PATH_MAX_ANGULAR_SPEED, 360.0, 30.0, 720.0));

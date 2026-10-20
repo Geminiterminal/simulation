@@ -110,12 +110,19 @@ public class RobotContainer {
      * bus voltage, producing realistic voltage sag under load.
      */
     public void simulationPeriodic() {
-        double totalCurrentDrawAmps = m_robotDrive.getSimulatedCurrentDraw()
-            + shooter.getSimulatedCurrentDraw()
-            + intake.getSimulatedCurrentDraw();
+        double rawCurrentDrawAmps =
+            m_robotDrive.getSimulatedCurrentDraw()
+                + shooter.getSimulatedCurrentDraw()
+                + intake.getSimulatedCurrentDraw();
+        double clampedCurrentAmps =
+            Double.isFinite(rawCurrentDrawAmps) ? Math.max(0.0, rawCurrentDrawAmps) : 0.0;
+        double loadedBusVoltage =
+            MathUtil.clamp(
+                BatterySim.calculateDefaultBatteryLoadedVoltage(clampedCurrentAmps),
+                6.0,
+                12.5);
 
-        RoboRioSim.setVInVoltage(
-            BatterySim.calculateDefaultBatteryLoadedVoltage(totalCurrentDrawAmps));
+        RoboRioSim.setVInVoltage(loadedBusVoltage);
     }
 
     private void configurePathPlanner() {

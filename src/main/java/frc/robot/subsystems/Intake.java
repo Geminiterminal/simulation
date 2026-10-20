@@ -37,6 +37,7 @@ import edu.wpi.first.wpilibj.smartdashboard.MechanismRoot2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 
+import frc.robot.Constants.NeoMotorConstants;
 import frc.robot.Constants.SimulationConstants;
 
 public class Intake extends SubsystemBase {
@@ -46,12 +47,12 @@ public class Intake extends SubsystemBase {
     private static final double DEPLOY_kI = 0.0;
     private static final double DEPLOY_kD = 0.0;
 
-    // --- Conveyor Velocity PID Constants ---
+    // --- Conveyor Velocity PID Constants (SPARK MAX + NEO 1.1) ---
     private static final double CONVEYOR_TARGET_RPM = 4500.0;
     private static final double CONVEYOR_kP = 0.0001;
     private static final double CONVEYOR_kI = 0.0;
     private static final double CONVEYOR_kD = 0.0;
-    private static final double CONVEYOR_kV = 0.0;
+    private static final double CONVEYOR_kV = 12.0 / NeoMotorConstants.kFreeSpeedRpm;
 
     // --- Roller Velocity Constants ---
     private static final double ROLLER_TARGET_RPM = 5600.0;
@@ -91,6 +92,8 @@ public class Intake extends SubsystemBase {
     private double shotCycleDwellStartTime = -1.0;
 
     // --- Simulation members (null on the real robot) ---
+    private final DCMotor m_deployGearbox = DCMotor.getNeoVortex(1);
+    private final DCMotor m_conveyorGearbox = DCMotor.getNEO(1);
     private SparkFlexSim m_deploySparkSim;
     private SingleJointedArmSim m_deployArmPhysics;
     private TalonFXSimState m_rollerSimState;
@@ -156,9 +159,9 @@ public class Intake extends SubsystemBase {
         if (RobotBase.isSimulation()) {
             // Deploy arm: single-jointed arm with gravity, Neo Vortex through
             // the calibrated total reduction.
-            m_deploySparkSim = new SparkFlexSim(deployMotor, DCMotor.getNeoVortex(1));
+            m_deploySparkSim = new SparkFlexSim(deployMotor, m_deployGearbox);
             m_deployArmPhysics = new SingleJointedArmSim(
-                DCMotor.getNeoVortex(1),
+                m_deployGearbox,
                 SimulationConstants.kDeployArmGearRatio,
                 SingleJointedArmSim.estimateMOI(
                     SimulationConstants.kDeployArmLengthMeters,
@@ -179,13 +182,13 @@ public class Intake extends SubsystemBase {
                 DCMotor.getKrakenX60(1));
 
             // Conveyor (NEO / SPARK MAX).
-            m_conveyorSparkSim = new SparkMaxSim(conveyorMotor, DCMotor.getNEO(1));
+            m_conveyorSparkSim = new SparkMaxSim(conveyorMotor, m_conveyorGearbox);
             m_conveyorPhysics = new DCMotorSim(
                 LinearSystemId.createDCMotorSystem(
-                    DCMotor.getNEO(1),
+                    m_conveyorGearbox,
                     SimulationConstants.kConveyorMoiKgMetersSquared,
                     SimulationConstants.kConveyorGearRatio),
-                DCMotor.getNEO(1));
+                m_conveyorGearbox);
 
             // Visual widget for the deploy arm.
             Mechanism2d mech = new Mechanism2d(0.8, 0.8);
@@ -262,7 +265,7 @@ public class Intake extends SubsystemBase {
         rollerMotor.setControl(rollerVelocityRequest.withVelocity(ROLLER_TARGET_RPS));
     }
 
-    public void runConveyor()     { conveyorController.setReference(CONVEYOR_TARGET_RPM, ControlType.kVelocity); }
+    public void runConveyor()     { conveyorController.setSetpoint(CONVEYOR_TARGET_RPM, ControlType.kVelocity); }
     public void reverseConveyor() { conveyorMotor.set(-0.8); }
     public void stopConveyor()    { conveyorMotor.set(0.0);  }
 
@@ -307,7 +310,9 @@ public class Intake extends SubsystemBase {
             return;
         }
         double dt = SimulationConstants.kLoopPeriodSeconds;
-        double busVoltage = RobotController.getBatteryVoltage();
+        double rawBusVoltage = RobotController.getBatteryVoltage();
+        double busVoltage =
+            (Double.isFinite(rawBusVoltage) && rawBusVoltage > 1.0) ? rawBusVoltage : 12.0;
 
         // Deploy arm. The SPARK encoder has no conversion factors configured,
         // so iterate() expects MOTOR rpm; convert arm velocity through the
@@ -342,16 +347,30 @@ public class Intake extends SubsystemBase {
         SmartDashboard.putNumber("Sim/Deploy Arm Angle (deg)", armAngleDeg);
     }
 
-    /** Total simulated stator current draw of the intake, in amps. */
+    /** Total simulated positive battery current draw of the intake, in amps. */
     public double getSimulatedCurrentDraw() {
         if (!RobotBase.isSimulation()) {
             return 0.0;
         }
-        return m_deploySparkSim.getMotorCurrent()
-            + m_conveyorSparkSim.getMotorCurrent()
-            + DCMotor.getKrakenX60(1).getCurrent(
+        double deploySupply =
+            m_deploySparkSim.getAppliedOutput() * m_deploySparkSim.getMotorCurrent();
+        double conveyorSupply =
+            m_conveyorSparkSim.getAppliedOutput() * m_conveyorSparkSim.getMotorCurrent();
+        double rollerCurrent =
+            DCMotor.getKrakenX60(1).getCurrent(
                 m_rollerPhysics.getAngularVelocityRadPerSec()
                     * SimulationConstants.kIntakeRollerGearRatio,
                 m_rollerSimState.getMotorVoltage());
+        double total = 0.0;
+        if (Double.isFinite(deploySupply) && deploySupply > 0.0) {
+            total += deploySupply;
+        }
+        if (Double.isFinite(conveyorSupply) && conveyorSupply > 0.0) {
+            total += conveyorSupply;
+        }
+        if (Double.isFinite(rollerCurrent) && rollerCurrent > 0.0) {
+            total += rollerCurrent;
+        }
+        return total;
     }
 }

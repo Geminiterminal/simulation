@@ -43,6 +43,8 @@ import com.pathplanner.lib.config.PIDConstants;
 import com.pathplanner.lib.config.RobotConfig;
 import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.trajectory.PathPlannerTrajectoryState;
+import com.pathplanner.lib.util.DriveFeedforwards;
 import com.pathplanner.lib.util.PathPlannerLogging;
 
 import edu.wpi.first.math.estimator.SwerveDrivePoseEstimator;
@@ -58,9 +60,9 @@ import org.photonvision.targeting.PhotonPipelineResult;
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
       "PathPlanner Commanded Omega (rad/s)";
-  private final PIDController m_pathXFeedback = new PIDController(2.5, 0.0, 0.0);
-  private final PIDController m_pathYFeedback = new PIDController(2.5, 0.0, 0.0);
-  private final PIDController m_pathRotationFeedback = new PIDController(4.0, 0.0, 0.0);
+  private final PIDController m_pathXFeedback = new PIDController(5.0, 0.0, 0.0);
+  private final PIDController m_pathYFeedback = new PIDController(5.0, 0.0, 0.0);
+  private final PIDController m_pathRotationFeedback = new PIDController(5.0, 0.0, 0.0);
   private Pose2d m_pathTargetPose;
   private boolean m_isFollowingPath = false;
 
@@ -467,36 +469,61 @@ public class DriveSubsystem extends SubsystemBase {
     addPhotonVisionMeasurement();
     
     // Configure AutoBuilder last
-    if (config != null) {
-          AutoBuilder.configure(
-            this::getPose, // Robot pose supplier
-            this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
-            this::getRobotRelativeSpeeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
-            this::driveRobotRelative,      // Consumer<ChassisSpeeds> for output
-            new PPHolonomicDriveController( // PPHolonomicController is the built in path following controller for holonomic drive trains
-                    new PIDConstants(0.0, 0.0, 0.0), // Feedback is supplied by live dashboard-tuned PIDs below
-                    new PIDConstants(0.0, 0.0, 0.0)
-            ),
-            config, // The robot configuration
-            () -> {
-              // Boolean supplier that controls when the path will be mirrored for the red alliance
-              // This will flip the path being followed to the red side of the field.
-              // THE ORIGIN WILL REMAIN ON THE BLUE SIDE
-
-              return m_allianceSubsystem.isRed();
-            },
-            this // Reference to this subsystem to set requirements
-    );
-    }
-    
-    // PathPlanner's feedback callbacks let the PID gains be changed live from
-    // Elastic without rebuilding AutoBuilder. Feed-forward from the authored
-    // trajectory remains PathPlanner's responsibility; these controllers add
-    // field-relative pose-error correction.
     m_pathRotationFeedback.enableContinuousInput(-Math.PI, Math.PI);
-    PPHolonomicDriveController.overrideXYFeedback(
-        this::calculatePathXFeedback, this::calculatePathYFeedback);
-    PPHolonomicDriveController.overrideRotationFeedback(this::calculatePathRotationFeedback);
+    PPHolonomicDriveController.clearFeedbackOverrides();
+    if (config != null) {
+      AutoBuilder.configure(
+          this::getPose, // Robot pose supplier
+          this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
+          this::getRobotRelativeSpeeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
+          this::driveRobotRelative, // BiConsumer<ChassisSpeeds, DriveFeedforwards> for output
+          new PPHolonomicDriveController(
+              new PIDConstants(
+                  AutoTuning.translationP(), AutoTuning.translationI(), AutoTuning.translationD()),
+              new PIDConstants(
+                  AutoTuning.rotationP(), AutoTuning.rotationI(), AutoTuning.rotationD())) {
+            @Override
+            public void reset(Pose2d currentPose, ChassisSpeeds currentSpeeds) {
+              super.reset(currentPose, currentSpeeds);
+              m_pathXFeedback.reset();
+              m_pathYFeedback.reset();
+              m_pathRotationFeedback.reset();
+            }
+
+            @Override
+            public ChassisSpeeds calculateRobotRelativeSpeeds(
+                Pose2d currentPose, PathPlannerTrajectoryState targetState) {
+              updatePathFeedbackGains();
+              double xFF = targetState.fieldSpeeds.vxMetersPerSecond;
+              double yFF = targetState.fieldSpeeds.vyMetersPerSecond;
+              double rotFF = targetState.fieldSpeeds.omegaRadiansPerSecond;
+              Rotation2d targetRotation =
+                  getRotationTargetOverride().orElse(targetState.pose.getRotation());
+              double xFeedback =
+                  m_pathXFeedback.calculate(currentPose.getX(), targetState.pose.getX());
+              double yFeedback =
+                  m_pathYFeedback.calculate(currentPose.getY(), targetState.pose.getY());
+              double rotFeedback =
+                  m_pathRotationFeedback.calculate(
+                      currentPose.getRotation().getRadians(), targetRotation.getRadians());
+              return ChassisSpeeds.fromFieldRelativeSpeeds(
+                  xFF + xFeedback,
+                  yFF + yFeedback,
+                  rotFF + rotFeedback,
+                  currentPose.getRotation());
+            }
+          },
+          config, // The robot configuration
+          () -> {
+            // Boolean supplier that controls when the path will be mirrored for the red alliance
+            // This will flip the path being followed to the red side of the field.
+            // THE ORIGIN WILL REMAIN ON THE BLUE SIDE
+            return m_allianceSubsystem.isRed();
+          },
+          this // Reference to this subsystem to set requirements
+      );
+    }
+
     PathPlannerLogging.setLogTargetPoseCallback(pose -> m_pathTargetPose = pose);
     PathPlannerLogging.setLogActivePathCallback(poses -> {
       m_isFollowingPath = !poses.isEmpty();
@@ -507,9 +534,6 @@ public class DriveSubsystem extends SubsystemBase {
       SmartDashboard.putNumber("Auto/Current Pose Y (m)", pose.getY());
       SmartDashboard.putNumber("Auto/Current Heading (deg)", pose.getRotation().getDegrees());
     });
-
-    // THE SECRET SAUCE: Tell PathPlanner to check our override method before rotating
-    PPHolonomicDriveController.setRotationTargetOverride(this::getRotationTargetOverride);
 
     // Publish the simulated field so the robot pose can be watched in the sim
     // GUI / dashboards (Glass, AdvantageScope).
@@ -526,26 +550,6 @@ public class DriveSubsystem extends SubsystemBase {
     m_pathYFeedback.setPID(kp, ki, kd);
     m_pathRotationFeedback.setPID(
         AutoTuning.rotationP(), AutoTuning.rotationI(), AutoTuning.rotationD());
-  }
-
-  private double calculatePathXFeedback() {
-    if (m_pathTargetPose == null) return 0.0;
-    updatePathFeedbackGains();
-    return m_pathXFeedback.calculate(getPose().getX(), m_pathTargetPose.getX());
-  }
-
-  private double calculatePathYFeedback() {
-    if (m_pathTargetPose == null) return 0.0;
-    updatePathFeedbackGains();
-    return m_pathYFeedback.calculate(getPose().getY(), m_pathTargetPose.getY());
-  }
-
-  private double calculatePathRotationFeedback() {
-    if (m_pathTargetPose == null) return 0.0;
-    updatePathFeedbackGains();
-    Rotation2d targetHeading = getRotationTargetOverride().orElse(m_pathTargetPose.getRotation());
-    return m_pathRotationFeedback.calculate(
-        getPose().getRotation().getRadians(), targetHeading.getRadians());
   }
 
   private static final double kHeadingToleranceDeg = 2.0;
@@ -887,8 +891,16 @@ public class DriveSubsystem extends SubsystemBase {
         xSpeed, ySpeed, rot, estimatorRotation);
   }
   
-  /** Drive the robot using robot-relative chassis speeds (used by AutoBuilder). */
+  /** Drive the robot using robot-relative chassis speeds (convenience overload). */
   public void driveRobotRelative(ChassisSpeeds speeds) {
+    driveRobotRelative(speeds, DriveFeedforwards.zeros(4));
+  }
+
+  /**
+   * Drive the robot using robot-relative chassis speeds and per-module force feedforwards from
+   * PathPlanner's {@link AutoBuilder}.
+   */
+  public void driveRobotRelative(ChassisSpeeds speeds, DriveFeedforwards feedforwards) {
     // This consumer receives PathPlanner's controller output before wheel-speed
     // desaturation, so it is the requested angular velocity rather than a
     // measured or subsequently limited value.
@@ -912,11 +924,20 @@ public class DriveSubsystem extends SubsystemBase {
     SwerveDriveKinematics.desaturateWheelSpeeds(
         states, AutoTuning.maxModuleSpeed());
 
-    // Apply to modules
-    m_frontLeft.setDesiredState(states[0]);
-    m_frontRight.setDesiredState(states[1]);
-    m_rearLeft.setDesiredState(states[2]);
-    m_rearRight.setDesiredState(states[3]);
+    double[] fx =
+        feedforwards != null ? feedforwards.robotRelativeForcesXNewtons() : new double[4];
+    double[] fy =
+        feedforwards != null ? feedforwards.robotRelativeForcesYNewtons() : new double[4];
+
+    // Apply states and force feedforwards to modules (FL, FR, BL, BR order)
+    m_frontLeft.setDesiredState(
+        states[0], fx.length > 0 ? fx[0] : 0.0, fy.length > 0 ? fy[0] : 0.0);
+    m_frontRight.setDesiredState(
+        states[1], fx.length > 1 ? fx[1] : 0.0, fy.length > 1 ? fy[1] : 0.0);
+    m_rearLeft.setDesiredState(
+        states[2], fx.length > 2 ? fx[2] : 0.0, fy.length > 2 ? fy[2] : 0.0);
+    m_rearRight.setDesiredState(
+        states[3], fx.length > 3 ? fx[3] : 0.0, fy.length > 3 ? fy[3] : 0.0);
   }
 
   // Target heading the PID should drive toward
