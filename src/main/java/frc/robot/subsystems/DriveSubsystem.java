@@ -476,7 +476,8 @@ public class DriveSubsystem extends SubsystemBase {
           this::getPose, // Robot pose supplier
           this::resetOdometry, // Method to reset odometry (will be called if your auto has a starting pose)
           this::getRobotRelativeSpeeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
-          this::driveRobotRelative, // BiConsumer<ChassisSpeeds, DriveFeedforwards> for output
+          (ChassisSpeeds speeds, DriveFeedforwards feedforwards) ->
+              driveRobotRelative(speeds, feedforwards),
           new PPHolonomicDriveController(
               new PIDConstants(
                   AutoTuning.translationP(), AutoTuning.translationI(), AutoTuning.translationD()),
@@ -493,12 +494,14 @@ public class DriveSubsystem extends SubsystemBase {
             @Override
             public ChassisSpeeds calculateRobotRelativeSpeeds(
                 Pose2d currentPose, PathPlannerTrajectoryState targetState) {
-              updatePathFeedbackGains();
+              DriveSubsystem.this.updatePathFeedbackGains();
               double xFF = targetState.fieldSpeeds.vxMetersPerSecond;
               double yFF = targetState.fieldSpeeds.vyMetersPerSecond;
               double rotFF = targetState.fieldSpeeds.omegaRadiansPerSecond;
               Rotation2d targetRotation =
-                  getRotationTargetOverride().orElse(targetState.pose.getRotation());
+                  DriveSubsystem.this
+                      .getRotationTargetOverride()
+                      .orElse(targetState.pose.getRotation());
               double xFeedback =
                   m_pathXFeedback.calculate(currentPose.getX(), targetState.pose.getX());
               double yFeedback =

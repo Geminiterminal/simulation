@@ -85,6 +85,11 @@ class SwerveSimulationUnitsTest(unittest.TestCase):
             "kMaxSpeedMetersPerSecond = ModuleConstants.kDriveWheelFreeSpeedRps",
             CONSTANTS_SOURCE,
         )
+        self.assertIn(
+            "(ChassisSpeeds speeds, DriveFeedforwards feedforwards) ->",
+            DRIVE_SOURCE,
+        )
+        self.assertNotIn("this::driveRobotRelative", DRIVE_SOURCE)
         discretize = DRIVE_SOURCE.index("ChassisSpeeds.discretize(speeds")
         kinematics = DRIVE_SOURCE.index(
             "DriveConstants.kDriveKinematics.toSwerveModuleStates(discretizedSpeeds)"
