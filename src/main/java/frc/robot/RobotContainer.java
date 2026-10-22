@@ -64,6 +64,7 @@ public class RobotContainer {
     private final DriveSubsystem m_robotDrive = new DriveSubsystem(visionSystem, allianceSubsystem);
     private final Shooter shooter = Shooter.getInstance();
     private final Intake intake = Intake.getInstance();
+    private final SysIdSupport m_sysIdSupport = new SysIdSupport(m_robotDrive, shooter, intake);
 
     private final CommandXboxController xboxController = new CommandXboxController(OIConstants.kDriverControllerPort);
     private final Joystick thrustmasterController = new Joystick(OIConstants.kDriverControllerPort);
@@ -147,6 +148,7 @@ public class RobotContainer {
         autoChooser.addOption("Blue right", "Blue right");
         autoChooser.addOption("y changes", "y changes");
         autoChooser.addOption("x changes", "x changes");
+        SysIdSupport.registerAutoChooserOptions(autoChooser);
         SmartDashboard.putData("Auto Chooser", autoChooser);
     }
 
@@ -271,6 +273,32 @@ public class RobotContainer {
 
         // SHARED
         activeProfileTrigger(DriverControlsProfile::toggleRollerTrigger).onTrue(new InstantCommand(intake::toggleRoller));
+
+        // SYSTEM IDENTIFICATION (WPILib SysId):
+        // Hold Thrustmaster unused right-bank buttons 11 / 13 / 15 / 16 (or Xbox Back + A/B/X/Y)
+        // to run Quasistatic Fwd/Rev and Dynamic Fwd/Rev on the mechanism chosen in "SysId Mechanism".
+        // Releasing the button immediately stops the mechanism. Suppressed when attached to FMS.
+        Trigger sysIdAllowed = new Trigger(() -> !DriverStation.isFMSAttached());
+        activeProfileTrigger(DriverControlsProfile::sysIdQuasistaticForwardTrigger)
+            .and(sysIdAllowed)
+            .whileTrue(
+                m_sysIdSupport.createDeferredTestCommand(
+                    SysIdSupport.TestType.QUASISTATIC_FORWARD));
+        activeProfileTrigger(DriverControlsProfile::sysIdQuasistaticReverseTrigger)
+            .and(sysIdAllowed)
+            .whileTrue(
+                m_sysIdSupport.createDeferredTestCommand(
+                    SysIdSupport.TestType.QUASISTATIC_REVERSE));
+        activeProfileTrigger(DriverControlsProfile::sysIdDynamicForwardTrigger)
+            .and(sysIdAllowed)
+            .whileTrue(
+                m_sysIdSupport.createDeferredTestCommand(
+                    SysIdSupport.TestType.DYNAMIC_FORWARD));
+        activeProfileTrigger(DriverControlsProfile::sysIdDynamicReverseTrigger)
+            .and(sysIdAllowed)
+            .whileTrue(
+                m_sysIdSupport.createDeferredTestCommand(
+                    SysIdSupport.TestType.DYNAMIC_REVERSE));
         };
 
     private Command autoAimThenDistanceCommand() {
@@ -445,6 +473,9 @@ public class RobotContainer {
         // every time autonomous is enabled.
         if (selected == null || "NONE".equals(selected)) {
             return Commands.none();
+        }
+        if (SysIdSupport.isSysIdAutoKey(selected)) {
+            return m_sysIdSupport.createAutoCommand(selected);
         }
         if (!AutoBuilder.isConfigured()) {
             DriverStation.reportError(

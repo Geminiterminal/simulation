@@ -1,5 +1,13 @@
 package frc.robot.subsystems;
 
+import static edu.wpi.first.units.Units.RPM;
+import static edu.wpi.first.units.Units.Rotations;
+import static edu.wpi.first.units.Units.RotationsPerSecond;
+import static edu.wpi.first.units.Units.Second;
+import static edu.wpi.first.units.Units.Seconds;
+import static edu.wpi.first.units.Units.Volts;
+
+import com.revrobotics.spark.SparkBase;
 import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.SparkFlex;
 import com.revrobotics.spark.SparkClosedLoopController;
@@ -12,9 +20,11 @@ import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
 import com.revrobotics.spark.SparkBase.ResetMode;
 import com.revrobotics.spark.SparkBase.PersistMode;
 
+import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.DutyCycleOut;
 import com.ctre.phoenix6.controls.VelocityVoltage;
+import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.InvertedValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
@@ -26,6 +36,9 @@ import com.revrobotics.sim.SparkMaxSim;
 import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.math.system.plant.LinearSystemId;
 import edu.wpi.first.math.util.Units;
+import edu.wpi.first.units.measure.MutAngle;
+import edu.wpi.first.units.measure.MutAngularVelocity;
+import edu.wpi.first.units.measure.MutVoltage;
 import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.Timer;
@@ -35,7 +48,9 @@ import edu.wpi.first.wpilibj.smartdashboard.Mechanism2d;
 import edu.wpi.first.wpilibj.smartdashboard.MechanismLigament2d;
 import edu.wpi.first.wpilibj.smartdashboard.MechanismRoot2d;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 
 import frc.robot.Constants.NeoMotorConstants;
 import frc.robot.Constants.SimulationConstants;
@@ -82,6 +97,7 @@ public class Intake extends SubsystemBase {
 
     private final DutyCycleOut rollerDutyCycleRequest = new DutyCycleOut(0.0);
     private final VelocityVoltage rollerVelocityRequest = new VelocityVoltage(0.0);
+    private final VoltageOut rollerVoltageRequest = new VoltageOut(0.0);
 
     private final SparkClosedLoopController deployController;
     private final SparkClosedLoopController conveyorController;
@@ -145,6 +161,11 @@ public class Intake extends SubsystemBase {
         rollerConfig.Slot0.kD = ROLLER_kD;
         rollerConfig.Slot0.kV = ROLLER_kV;
         rollerMotor.getConfigurator().apply(rollerConfig);
+        BaseStatusSignal.setUpdateFrequencyForAll(
+            100.0,
+            rollerMotor.getPosition(),
+            rollerMotor.getVelocity(),
+            rollerMotor.getMotorVoltage());
 
         // 3. Conveyor Motor Config
         SparkMaxConfig conveyorConfig = new SparkMaxConfig();
@@ -372,5 +393,183 @@ public class Intake extends SubsystemBase {
             total += rollerCurrent;
         }
         return total;
+    }
+
+    // =========================================================================
+    // --- SYSTEM IDENTIFICATION (WPILib SysId) ---
+    // =========================================================================
+
+    /**
+     * Software safety travel window (in motor rotations) for Intake Deploy Arm SysId routines. The
+     * arm travels from {@code 0.0} (horizontal stowed) to {@code 59.0} (deployed); keeping a
+     * 4-rotation buffer on both ends prevents driving into physical hard stops while hardware soft
+     * limits are disabled.
+     */
+    static final double SYSID_DEPLOY_MIN_ROTATIONS = 4.0;
+    static final double SYSID_DEPLOY_MAX_ROTATIONS = 55.0;
+
+    private final MutVoltage m_sysIdVoltage = Volts.mutable(0.0);
+    private final MutAngle m_sysIdAngle = Rotations.mutable(0.0);
+    private final MutAngularVelocity m_sysIdVelocity = RotationsPerSecond.mutable(0.0);
+
+    /**
+     * Characterizes the Intake Deploy Arm (SparkFlex + NEO Vortex) with arm-safe ramp/step voltages
+     * and logs arm-joint angle/velocity (with {@code 0} rotations = horizontal stowed) so WPILib
+     * SysId's {@code Arm} gravity fit ({@code kG * cos(theta)}) uses true joint angles rather than
+     * 59 motor shaft turns.
+     */
+    private final SysIdRoutine m_deploySysIdRoutine =
+        new SysIdRoutine(
+            new SysIdRoutine.Config(
+                Volts.of(0.5).per(Second),
+                Volts.of(2.5),
+                Seconds.of(6.0)),
+            new SysIdRoutine.Mechanism(
+                voltage -> setSysIdDeployVolts(voltage.in(Volts)),
+                log -> {
+                    double armRotations =
+                        deployMotorRotationsToArmRotations(deployMotor.getEncoder().getPosition());
+                    double armRps =
+                        deployMotorRpmToArmRotationsPerSecond(deployMotor.getEncoder().getVelocity());
+                    log.motor("intake-deploy")
+                        .voltage(m_sysIdVoltage.mut_replace(getSparkAppliedVolts(deployMotor), Volts))
+                        .angularPosition(m_sysIdAngle.mut_replace(armRotations, Rotations))
+                        .angularVelocity(m_sysIdVelocity.mut_replace(armRps, RotationsPerSecond));
+                },
+                this,
+                "intake-deploy"));
+
+    /** Characterizes the Intake Roller (Kraken X60 / TalonFX) in rotations and rotations/sec. */
+    private final SysIdRoutine m_rollerSysIdRoutine =
+        new SysIdRoutine(
+            new SysIdRoutine.Config(
+                Volts.of(1.0).per(Second),
+                Volts.of(6.0),
+                Seconds.of(10.0)),
+            new SysIdRoutine.Mechanism(
+                voltage -> setSysIdRollerVolts(voltage.in(Volts)),
+                log -> {
+                    log.motor("intake-roller")
+                        .voltage(
+                            m_sysIdVoltage.mut_replace(
+                                rollerMotor.getMotorVoltage().getValueAsDouble(), Volts))
+                        .angularPosition(
+                            m_sysIdAngle.mut_replace(
+                                rollerMotor.getPosition().getValueAsDouble(), Rotations))
+                        .angularVelocity(
+                            m_sysIdVelocity.mut_replace(
+                                rollerMotor.getVelocity().getValueAsDouble(), RotationsPerSecond));
+                },
+                this,
+                "intake-roller"));
+
+    /** Characterizes the Intake Conveyor (SPARK MAX + NEO 1.1). */
+    private final SysIdRoutine m_conveyorSysIdRoutine =
+        new SysIdRoutine(
+            new SysIdRoutine.Config(
+                Volts.of(1.0).per(Second),
+                Volts.of(6.0),
+                Seconds.of(10.0)),
+            new SysIdRoutine.Mechanism(
+                voltage -> conveyorMotor.setVoltage(voltage.in(Volts)),
+                log -> {
+                    log.motor("intake-conveyor")
+                        .voltage(m_sysIdVoltage.mut_replace(getSparkAppliedVolts(conveyorMotor), Volts))
+                        .angularPosition(
+                            m_sysIdAngle.mut_replace(conveyorMotor.getEncoder().getPosition(), Rotations))
+                        .angularVelocity(
+                            m_sysIdVelocity.mut_replace(conveyorMotor.getEncoder().getVelocity(), RPM));
+                },
+                this,
+                "intake-conveyor"));
+
+    private static double getSparkAppliedVolts(SparkBase spark) {
+        return MAXSwerveModule.computeAppliedVolts(
+            spark.getAppliedOutput(),
+            spark.getBusVoltage(),
+            RobotController.getBatteryVoltage(),
+            RobotBase.isSimulation());
+    }
+
+    static double deployMotorRotationsToArmRotations(double motorRotations) {
+        return motorRotations / SimulationConstants.kDeployArmGearRatio;
+    }
+
+    static double deployMotorRpmToArmRotationsPerSecond(double motorRpm) {
+        return (motorRpm / 60.0) / SimulationConstants.kDeployArmGearRatio;
+    }
+
+    static double clampDeploySysIdVolts(double requestedVolts, double motorRotations) {
+        if (requestedVolts > 0.0 && motorRotations >= SYSID_DEPLOY_MAX_ROTATIONS) {
+            return 0.0;
+        }
+        if (requestedVolts < 0.0 && motorRotations <= SYSID_DEPLOY_MIN_ROTATIONS) {
+            return 0.0;
+        }
+        return requestedVolts;
+    }
+
+    static boolean hasReachedDeploySysIdLimit(
+            SysIdRoutine.Direction direction, double motorRotations) {
+        return direction == SysIdRoutine.Direction.kForward
+            ? motorRotations >= SYSID_DEPLOY_MAX_ROTATIONS
+            : motorRotations <= SYSID_DEPLOY_MIN_ROTATIONS;
+    }
+
+    private void setSysIdDeployVolts(double requestedVolts) {
+        cyclingForShot = false;
+        shotCycleDwellStartTime = -1.0;
+        double safeVolts =
+            clampDeploySysIdVolts(requestedVolts, deployMotor.getEncoder().getPosition());
+        deployMotor.setVoltage(safeVolts);
+    }
+
+    private void setSysIdRollerVolts(double volts) {
+        rollerRunning = false;
+        rollerMotor.setControl(rollerVoltageRequest.withOutput(volts));
+    }
+
+    public double getDeployPositionRotations() {
+        return deployMotor.getEncoder().getPosition();
+    }
+
+    public boolean isDeployArmStopped() {
+        return Math.abs(deployMotor.getEncoder().getVelocity()) < 30.0;
+    }
+
+    public boolean isRollerStopped() {
+        return Math.abs(rollerMotor.getVelocity().getValueAsDouble()) < 1.0;
+    }
+
+    public boolean isConveyorStopped() {
+        return Math.abs(conveyorMotor.getEncoder().getVelocity()) < 60.0;
+    }
+
+    public Command sysIdDeployQuasistatic(SysIdRoutine.Direction direction) {
+        return m_deploySysIdRoutine
+            .quasistatic(direction)
+            .until(() -> hasReachedDeploySysIdLimit(direction, getDeployPositionRotations()));
+    }
+
+    public Command sysIdDeployDynamic(SysIdRoutine.Direction direction) {
+        return m_deploySysIdRoutine
+            .dynamic(direction)
+            .until(() -> hasReachedDeploySysIdLimit(direction, getDeployPositionRotations()));
+    }
+
+    public Command sysIdRollerQuasistatic(SysIdRoutine.Direction direction) {
+        return m_rollerSysIdRoutine.quasistatic(direction);
+    }
+
+    public Command sysIdRollerDynamic(SysIdRoutine.Direction direction) {
+        return m_rollerSysIdRoutine.dynamic(direction);
+    }
+
+    public Command sysIdConveyorQuasistatic(SysIdRoutine.Direction direction) {
+        return m_conveyorSysIdRoutine.quasistatic(direction);
+    }
+
+    public Command sysIdConveyorDynamic(SysIdRoutine.Direction direction) {
+        return m_conveyorSysIdRoutine.dynamic(direction);
     }
 }

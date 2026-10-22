@@ -1,6 +1,24 @@
 package frc.robot.subsystems;
 
+import static edu.wpi.first.units.Units.Degrees;
+import static edu.wpi.first.units.Units.DegreesPerSecond;
+import static edu.wpi.first.units.Units.Meters;
+import static edu.wpi.first.units.Units.MetersPerSecond;
+import static edu.wpi.first.units.Units.Radians;
+import static edu.wpi.first.units.Units.RadiansPerSecond;
+import static edu.wpi.first.units.Units.Second;
+import static edu.wpi.first.units.Units.Seconds;
+import static edu.wpi.first.units.Units.Volts;
+
+import edu.wpi.first.units.measure.MutAngle;
+import edu.wpi.first.units.measure.MutAngularVelocity;
+import edu.wpi.first.units.measure.MutDistance;
+import edu.wpi.first.units.measure.MutLinearVelocity;
+import edu.wpi.first.units.measure.MutVoltage;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 import edu.wpi.first.hal.FRCNetComm.tInstances;
 import edu.wpi.first.hal.FRCNetComm.tResourceType;
 import edu.wpi.first.hal.HAL;
@@ -1199,5 +1217,261 @@ public class DriveSubsystem extends SubsystemBase {
         + m_frontRight.getSimulatedCurrentDraw()
         + m_rearLeft.getSimulatedCurrentDraw()
         + m_rearRight.getSimulatedCurrentDraw();
+  }
+
+  // =========================================================================
+  // --- SYSTEM IDENTIFICATION (WPILib SysId) ---
+  // =========================================================================
+
+  private static final double kSysIdAlignToleranceRad = Math.toRadians(5.0);
+  private static final double kSysIdAlignTimeoutSeconds = 0.5;
+  private static final Rotation2d[] kAngularSysIdModuleAngles = computeAngularSysIdModuleAngles();
+
+  // Mutable unit holders reused every loop to avoid heap allocations during logging.
+  private final MutVoltage m_sysIdVoltage = Volts.mutable(0.0);
+  private final MutDistance m_sysIdDistance = Meters.mutable(0.0);
+  private final MutLinearVelocity m_sysIdLinearVelocity = MetersPerSecond.mutable(0.0);
+  private final MutAngle m_sysIdAngle = Radians.mutable(0.0);
+  private final MutAngularVelocity m_sysIdAngularVelocity = RadiansPerSecond.mutable(0.0);
+
+  /**
+   * Linear (translation) SysId routine: holds all four module steering angles straight forward
+   * ({@code 0 deg}, no 180-degree optimization flips) and drives all four NEO drive motors with the
+   * requested open-loop voltage.
+   */
+  private final SysIdRoutine m_linearSysIdRoutine =
+      new SysIdRoutine(
+          new SysIdRoutine.Config(
+              Volts.of(1.0).per(Second),
+              Volts.of(7.0),
+              Seconds.of(10.0)),
+          new SysIdRoutine.Mechanism(
+              voltage -> setSysIdLinearVolts(voltage.in(Volts)),
+              log -> {
+                logDriveModuleLinear(log, "drive-front-left", m_frontLeft);
+                logDriveModuleLinear(log, "drive-front-right", m_frontRight);
+                logDriveModuleLinear(log, "drive-rear-left", m_rearLeft);
+                logDriveModuleLinear(log, "drive-rear-right", m_rearRight);
+              },
+              this,
+              "drive-linear"));
+
+  /**
+   * Angular (chassis rotation / MOI) SysId routine: holds each module tangent to the chassis circle
+   * for pure counter-clockwise rotation ({@code +Volts} -> {@code +CCW}) and logs mean drive
+   * voltage against continuous gyro heading and yaw rate.
+   */
+  private final SysIdRoutine m_angularSysIdRoutine =
+      new SysIdRoutine(
+          new SysIdRoutine.Config(
+              Volts.of(1.0).per(Second),
+              Volts.of(6.0),
+              Seconds.of(10.0)),
+          new SysIdRoutine.Mechanism(
+              voltage -> setSysIdAngularVolts(voltage.in(Volts)),
+              log -> {
+                double meanDriveVolts =
+                    0.25
+                        * (m_frontLeft.getDriveAppliedVolts()
+                            + m_frontRight.getDriveAppliedVolts()
+                            + m_rearLeft.getDriveAppliedVolts()
+                            + m_rearRight.getDriveAppliedVolts());
+                log.motor("drive-angular")
+                    .voltage(m_sysIdVoltage.mut_replace(meanDriveVolts, Volts))
+                    .angularPosition(m_sysIdAngle.mut_replace(getContinuousGyroDegrees(), Degrees))
+                    .angularVelocity(
+                        m_sysIdAngularVelocity.mut_replace(getTurnRate(), DegreesPerSecond));
+              },
+              this,
+              "drive-angular"));
+
+  /**
+   * Module steering (azimuth) SysId routine: holds drive wheels at {@code 0 V} and characterizes
+   * all four NEO 550 steering motors against continuous unwrapped Through Bore encoder angles.
+   */
+  private final SysIdRoutine m_steerSysIdRoutine =
+      new SysIdRoutine(
+          new SysIdRoutine.Config(
+              Volts.of(1.0).per(Second),
+              Volts.of(6.0),
+              Seconds.of(8.0)),
+          new SysIdRoutine.Mechanism(
+              voltage -> setSysIdSteerVolts(voltage.in(Volts)),
+              log -> {
+                logSteerModule(log, "steer-front-left", m_frontLeft);
+                logSteerModule(log, "steer-front-right", m_frontRight);
+                logSteerModule(log, "steer-rear-left", m_rearLeft);
+                logSteerModule(log, "steer-rear-right", m_rearRight);
+              },
+              this,
+              "drive-steer"));
+
+  private void logDriveModuleLinear(
+      edu.wpi.first.wpilibj.sysid.SysIdRoutineLog log, String name, MAXSwerveModule module) {
+    log.motor(name)
+        .voltage(m_sysIdVoltage.mut_replace(module.getDriveAppliedVolts(), Volts))
+        .linearPosition(m_sysIdDistance.mut_replace(module.getDrivePositionMeters(), Meters))
+        .linearVelocity(
+            m_sysIdLinearVelocity.mut_replace(
+                module.getDriveVelocityMetersPerSecond(), MetersPerSecond));
+  }
+
+  private void logSteerModule(
+      edu.wpi.first.wpilibj.sysid.SysIdRoutineLog log, String name, MAXSwerveModule module) {
+    log.motor(name)
+        .voltage(m_sysIdVoltage.mut_replace(module.getSteerAppliedVolts(), Volts))
+        .angularPosition(
+            m_sysIdAngle.mut_replace(module.getContinuousSteerPositionRadians(), Radians))
+        .angularVelocity(
+            m_sysIdAngularVelocity.mut_replace(
+                module.getSteerVelocityRadiansPerSecond(), RadiansPerSecond));
+  }
+
+  /**
+   * Computes the four chassis-relative module angles (FL, FR, RL, RR) tangent to the module radius
+   * vectors so {@code +Volts} on all drive motors produces pure counter-clockwise ({@code +omega})
+   * rotation with zero radial wheel scrub.
+   */
+  static Rotation2d[] computeAngularSysIdModuleAngles() {
+    double halfLength = DriveConstants.kWheelBase / 2.0;
+    double halfWidth = DriveConstants.kTrackWidth / 2.0;
+    // For module position (x, y), the CCW tangent direction is (-y, +x).
+    return new Rotation2d[] {
+      new Rotation2d(-halfWidth, halfLength),   // FL (+x, +y)
+      new Rotation2d(halfWidth, halfLength),    // FR (+x, -y)
+      new Rotation2d(-halfWidth, -halfLength),  // RL (-x, +y)
+      new Rotation2d(halfWidth, -halfLength)    // RR (-x, -y)
+    };
+  }
+
+  private void clearHeadingHoldForSysId() {
+    m_useHeadingController = false;
+    m_headingPID.reset();
+  }
+
+  private void alignModulesForLinearSysId() {
+    clearHeadingHoldForSysId();
+    m_frontLeft.alignForSysId(Rotation2d.kZero);
+    m_frontRight.alignForSysId(Rotation2d.kZero);
+    m_rearLeft.alignForSysId(Rotation2d.kZero);
+    m_rearRight.alignForSysId(Rotation2d.kZero);
+  }
+
+  private boolean areModulesAlignedForLinearSysId() {
+    return m_frontLeft.isAlignedToAngle(Rotation2d.kZero, kSysIdAlignToleranceRad)
+        && m_frontRight.isAlignedToAngle(Rotation2d.kZero, kSysIdAlignToleranceRad)
+        && m_rearLeft.isAlignedToAngle(Rotation2d.kZero, kSysIdAlignToleranceRad)
+        && m_rearRight.isAlignedToAngle(Rotation2d.kZero, kSysIdAlignToleranceRad);
+  }
+
+  private void alignModulesForAngularSysId() {
+    clearHeadingHoldForSysId();
+    m_frontLeft.alignForSysId(kAngularSysIdModuleAngles[0]);
+    m_frontRight.alignForSysId(kAngularSysIdModuleAngles[1]);
+    m_rearLeft.alignForSysId(kAngularSysIdModuleAngles[2]);
+    m_rearRight.alignForSysId(kAngularSysIdModuleAngles[3]);
+  }
+
+  private boolean areModulesAlignedForAngularSysId() {
+    return m_frontLeft.isAlignedToAngle(kAngularSysIdModuleAngles[0], kSysIdAlignToleranceRad)
+        && m_frontRight.isAlignedToAngle(kAngularSysIdModuleAngles[1], kSysIdAlignToleranceRad)
+        && m_rearLeft.isAlignedToAngle(kAngularSysIdModuleAngles[2], kSysIdAlignToleranceRad)
+        && m_rearRight.isAlignedToAngle(kAngularSysIdModuleAngles[3], kSysIdAlignToleranceRad);
+  }
+
+  private void setSysIdLinearVolts(double volts) {
+    clearHeadingHoldForSysId();
+    m_frontLeft.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
+    m_frontRight.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
+    m_rearLeft.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
+    m_rearRight.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
+  }
+
+  private void setSysIdAngularVolts(double volts) {
+    clearHeadingHoldForSysId();
+    m_frontLeft.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[0]);
+    m_frontRight.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[1]);
+    m_rearLeft.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[2]);
+    m_rearRight.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[3]);
+  }
+
+  private void setSysIdSteerVolts(double volts) {
+    clearHeadingHoldForSysId();
+    m_frontLeft.setSysIdSteerVolts(volts);
+    m_frontRight.setSysIdSteerVolts(volts);
+    m_rearLeft.setSysIdSteerVolts(volts);
+    m_rearRight.setSysIdSteerVolts(volts);
+  }
+
+  /**
+   * Returns the continuous (unwrapped) counter-clockwise gyro angle in degrees, suitable for
+   * multi-turn angular SysId characterization without +/-180 deg wrap discontinuities.
+   */
+  public double getContinuousGyroDegrees() {
+    if (m_isSim) {
+      return m_simGyro.getAngleDegrees();
+    }
+    return m_gyro.getAngle() * (DriveConstants.kGyroReversed ? 1.0 : -1.0);
+  }
+
+  /** Mean linear wheel position (meters) across all four drive modules. */
+  public double getAverageDrivePositionMeters() {
+    return 0.25
+        * (m_frontLeft.getDrivePositionMeters()
+            + m_frontRight.getDrivePositionMeters()
+            + m_rearLeft.getDrivePositionMeters()
+            + m_rearRight.getDrivePositionMeters());
+  }
+
+  /** Returns true when chassis translational and angular velocities have settled near zero. */
+  public boolean isStopped() {
+    ChassisSpeeds speeds = getRobotRelativeSpeeds();
+    return Math.abs(speeds.vxMetersPerSecond) < 0.05
+        && Math.abs(speeds.vyMetersPerSecond) < 0.05
+        && Math.abs(speeds.omegaRadiansPerSecond) < 0.08;
+  }
+
+  /** Pre-aligns modules to 0 deg and runs a linear quasistatic SysId test. */
+  public Command sysIdLinearQuasistatic(SysIdRoutine.Direction direction) {
+    return Commands.run(this::alignModulesForLinearSysId, this)
+        .until(this::areModulesAlignedForLinearSysId)
+        .withTimeout(kSysIdAlignTimeoutSeconds)
+        .andThen(m_linearSysIdRoutine.quasistatic(direction));
+  }
+
+  /** Pre-aligns modules to 0 deg and runs a linear dynamic SysId test. */
+  public Command sysIdLinearDynamic(SysIdRoutine.Direction direction) {
+    return Commands.run(this::alignModulesForLinearSysId, this)
+        .until(this::areModulesAlignedForLinearSysId)
+        .withTimeout(kSysIdAlignTimeoutSeconds)
+        .andThen(m_linearSysIdRoutine.dynamic(direction));
+  }
+
+  /** Pre-aligns modules tangent to the chassis circle and runs an angular quasistatic SysId test. */
+  public Command sysIdAngularQuasistatic(SysIdRoutine.Direction direction) {
+    return Commands.run(this::alignModulesForAngularSysId, this)
+        .until(this::areModulesAlignedForAngularSysId)
+        .withTimeout(kSysIdAlignTimeoutSeconds)
+        .andThen(m_angularSysIdRoutine.quasistatic(direction));
+  }
+
+  /** Pre-aligns modules tangent to the chassis circle and runs an angular dynamic SysId test. */
+  public Command sysIdAngularDynamic(SysIdRoutine.Direction direction) {
+    return Commands.run(this::alignModulesForAngularSysId, this)
+        .until(this::areModulesAlignedForAngularSysId)
+        .withTimeout(kSysIdAlignTimeoutSeconds)
+        .andThen(m_angularSysIdRoutine.dynamic(direction));
+  }
+
+  /** Runs a steering-motor quasistatic SysId test across all four swerve modules. */
+  public Command sysIdSteerQuasistatic(SysIdRoutine.Direction direction) {
+    return Commands.runOnce(this::clearHeadingHoldForSysId)
+        .andThen(m_steerSysIdRoutine.quasistatic(direction));
+  }
+
+  /** Runs a steering-motor dynamic SysId test across all four swerve modules. */
+  public Command sysIdSteerDynamic(SysIdRoutine.Direction direction) {
+    return Commands.runOnce(this::clearHeadingHoldForSysId)
+        .andThen(m_steerSysIdRoutine.dynamic(direction));
   }
 }

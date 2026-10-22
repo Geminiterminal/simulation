@@ -12,6 +12,15 @@ public class ThrustmasterProfile implements DriverControlsProfile {
         HALF_SPEED
     }
 
+    // Unused buttons on the Thrustmaster T.16000M FCS (16-button layout) right-side base cluster:
+    //   Top row (inner -> outer):    [13 = Quasi Rev] [12 = Sim Alliance] [11 = Quasi Fwd]
+    //   Bottom row (inner -> outer): [14 = Deploy Intake] [15 = Dyn Fwd]  [16 = Dyn Rev]
+    // (Button 7 on the left base cluster is also unused.)
+    public static final int kSysIdQuasistaticForwardButton = 11;
+    public static final int kSysIdQuasistaticReverseButton = 13;
+    public static final int kSysIdDynamicForwardButton = 15;
+    public static final int kSysIdDynamicReverseButton = 16;
+
     public final Joystick joystick;
     private DriveSpeedMode driveSpeedMode = DriveSpeedMode.STANDARD;
 
@@ -71,6 +80,30 @@ public class ThrustmasterProfile implements DriverControlsProfile {
     @Override public Trigger forceReseedTrigger() { return new Trigger(() -> joystick.getRawButton(9)); }
     // Simulation helper: switch between the red and blue alliance.
     @Override public Trigger toggleAllianceTrigger() { return new Trigger(() -> joystick.getRawButton(12)); }
+
+    private boolean isButtonAvailableAndPressed(int button) {
+        return joystick.getButtonCount() >= button && joystick.getRawButton(button);
+    }
+
+    @Override
+    public Trigger sysIdQuasistaticForwardTrigger() {
+        return new Trigger(() -> isButtonAvailableAndPressed(kSysIdQuasistaticForwardButton));
+    }
+
+    @Override
+    public Trigger sysIdQuasistaticReverseTrigger() {
+        return new Trigger(() -> isButtonAvailableAndPressed(kSysIdQuasistaticReverseButton));
+    }
+
+    @Override
+    public Trigger sysIdDynamicForwardTrigger() {
+        return new Trigger(() -> isButtonAvailableAndPressed(kSysIdDynamicForwardButton));
+    }
+
+    @Override
+    public Trigger sysIdDynamicReverseTrigger() {
+        return new Trigger(() -> isButtonAvailableAndPressed(kSysIdDynamicReverseButton));
+    }
 
 
  public void periodic() {
