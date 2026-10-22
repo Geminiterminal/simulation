@@ -218,6 +218,11 @@ public class Intake extends SubsystemBase {
                 "Deploy Arm", 0.35, 90.0)); // drawn pointing up when stowed
             SmartDashboard.putData("Intake Arm", mech);
         }
+
+        // Construct SysId routines after their motor fields have been initialized.
+        m_deploySysIdRoutine = createDeploySysIdRoutine();
+        m_rollerSysIdRoutine = createRollerSysIdRoutine();
+        m_conveyorSysIdRoutine = createConveyorSysIdRoutine();
     }
 
     // --- Singleton ---
@@ -412,14 +417,18 @@ public class Intake extends SubsystemBase {
     private final MutAngle m_sysIdAngle = Rotations.mutable(0.0);
     private final MutAngularVelocity m_sysIdVelocity = RotationsPerSecond.mutable(0.0);
 
+    private final SysIdRoutine m_deploySysIdRoutine;
+    private final SysIdRoutine m_rollerSysIdRoutine;
+    private final SysIdRoutine m_conveyorSysIdRoutine;
+
     /**
      * Characterizes the Intake Deploy Arm (SparkFlex + NEO Vortex) with arm-safe ramp/step voltages
      * and logs arm-joint angle/velocity (with {@code 0} rotations = horizontal stowed) so WPILib
      * SysId's {@code Arm} gravity fit ({@code kG * cos(theta)}) uses true joint angles rather than
      * 59 motor shaft turns.
      */
-    private final SysIdRoutine m_deploySysIdRoutine =
-        new SysIdRoutine(
+    private SysIdRoutine createDeploySysIdRoutine() {
+        return new SysIdRoutine(
             new SysIdRoutine.Config(
                 Volts.of(0.5).per(Second),
                 Volts.of(2.5),
@@ -438,10 +447,11 @@ public class Intake extends SubsystemBase {
                 },
                 this,
                 "intake-deploy"));
+    }
 
     /** Characterizes the Intake Roller (Kraken X60 / TalonFX) in rotations and rotations/sec. */
-    private final SysIdRoutine m_rollerSysIdRoutine =
-        new SysIdRoutine(
+    private SysIdRoutine createRollerSysIdRoutine() {
+        return new SysIdRoutine(
             new SysIdRoutine.Config(
                 Volts.of(1.0).per(Second),
                 Volts.of(6.0),
@@ -462,10 +472,11 @@ public class Intake extends SubsystemBase {
                 },
                 this,
                 "intake-roller"));
+    }
 
     /** Characterizes the Intake Conveyor (SPARK MAX + NEO 1.1). */
-    private final SysIdRoutine m_conveyorSysIdRoutine =
-        new SysIdRoutine(
+    private SysIdRoutine createConveyorSysIdRoutine() {
+        return new SysIdRoutine(
             new SysIdRoutine.Config(
                 Volts.of(1.0).per(Second),
                 Volts.of(6.0),
@@ -482,6 +493,7 @@ public class Intake extends SubsystemBase {
                 },
                 this,
                 "intake-conveyor"));
+    }
 
     private static double getSparkAppliedVolts(SparkBase spark) {
         return MAXSwerveModule.computeAppliedVolts(
