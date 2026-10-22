@@ -187,6 +187,10 @@ public class Shooter extends SubsystemBase {
                     SimulationConstants.kFeederGearRatio),
                 DCMotor.getKrakenX60(1));
         }
+
+        // Build SysId routines only after all motor fields have been initialized.
+        m_flywheelSysIdRoutine = createFlywheelSysIdRoutine();
+        m_feederSysIdRoutine = createFeederSysIdRoutine();
     }
 
     // --- Singleton ---
@@ -394,14 +398,17 @@ public class Shooter extends SubsystemBase {
     private final MutAngle m_sysIdAngle = Rotations.mutable(0.0);
     private final MutAngularVelocity m_sysIdVelocity = RotationsPerSecond.mutable(0.0);
 
+    private final SysIdRoutine m_flywheelSysIdRoutine;
+    private final SysIdRoutine m_feederSysIdRoutine;
+
     /**
      * Characterizes both the front and back shooter NEO flywheels simultaneously while keeping the
      * feeder off. Note: WPILib SysId reports angular gains in {@code Rotations/sec}; divide
      * identified {@code kV} (and {@code kP}) by {@code 60.0} when entering REVLib's native RPM
      * closed-loop configuration.
      */
-    private final SysIdRoutine m_flywheelSysIdRoutine =
-        new SysIdRoutine(
+    private SysIdRoutine createFlywheelSysIdRoutine() {
+        return new SysIdRoutine(
             new SysIdRoutine.Config(
                 Volts.of(1.0).per(Second),
                 Volts.of(7.0),
@@ -424,13 +431,14 @@ public class Shooter extends SubsystemBase {
                 },
                 this,
                 "shooter-flywheels"));
+    }
 
     /**
      * Characterizes the Kraken X60 feeder TalonFX in rotations and rotations/sec (matching Phoenix 6
      * {@code Slot0} gain units 1:1).
      */
-    private final SysIdRoutine m_feederSysIdRoutine =
-        new SysIdRoutine(
+    private SysIdRoutine createFeederSysIdRoutine() {
+        return new SysIdRoutine(
             new SysIdRoutine.Config(
                 Volts.of(1.0).per(Second),
                 Volts.of(6.0),
@@ -451,6 +459,7 @@ public class Shooter extends SubsystemBase {
                 },
                 this,
                 "shooter-feeder"));
+    }
 
     private static double getSparkAppliedVolts(SparkMax spark) {
         return MAXSwerveModule.computeAppliedVolts(
