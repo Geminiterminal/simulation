@@ -1,5 +1,12 @@
 package frc.robot.subsystems;
 
+import static edu.wpi.first.units.Units.RPM;
+import static edu.wpi.first.units.Units.Rotations;
+import static edu.wpi.first.units.Units.RotationsPerSecond;
+import static edu.wpi.first.units.Units.Second;
+import static edu.wpi.first.units.Units.Seconds;
+import static edu.wpi.first.units.Units.Volts;
+
 import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.SparkLowLevel.MotorType;
 import com.revrobotics.spark.SparkClosedLoopController;
@@ -11,9 +18,11 @@ import com.revrobotics.spark.SparkBase.PersistMode;
 import com.revrobotics.sim.SparkMaxSim;
 
 // --- CTRE Phoenix 6 Imports ---
+import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.controls.DutyCycleOut;
 import com.ctre.phoenix6.controls.VelocityVoltage;
+import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import com.ctre.phoenix6.signals.InvertedValue;
@@ -21,10 +30,15 @@ import com.ctre.phoenix6.sim.TalonFXSimState;
 
 import edu.wpi.first.math.interpolation.InterpolatingDoubleTreeMap;
 import edu.wpi.first.math.system.plant.LinearSystemId;
+import edu.wpi.first.units.measure.MutAngle;
+import edu.wpi.first.units.measure.MutAngularVelocity;
+import edu.wpi.first.units.measure.MutVoltage;
 import edu.wpi.first.wpilibj.RobotBase;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.wpilibj.simulation.DCMotorSim;
 import edu.wpi.first.wpilibj.simulation.FlywheelSim;
@@ -47,6 +61,7 @@ public class Shooter extends SubsystemBase {
     // Reuse control request objects to avoid repeated allocations.
     private final DutyCycleOut feederDutyCycleRequest = new DutyCycleOut(0.0);
     private final VelocityVoltage feederVelocityRequest = new VelocityVoltage(0.0);
+    private final VoltageOut feederVoltageRequest = new VoltageOut(0.0);
 
     // --- State ---
     private boolean systemEnabled    = false;
@@ -139,6 +154,11 @@ public class Shooter extends SubsystemBase {
         feederConfig.Slot0.kV = FEEDER_kV;
 
         feederMain.getConfigurator().apply(feederConfig);
+        BaseStatusSignal.setUpdateFrequencyForAll(
+            100.0,
+            feederMain.getPosition(),
+            feederMain.getVelocity(),
+            feederMain.getMotorVoltage());
 
         // --- Simulation setup: physics models + controller emulators ---
         if (RobotBase.isSimulation()) {
@@ -364,5 +384,122 @@ public class Shooter extends SubsystemBase {
             total += feederCurrent;
         }
         return total;
+    }
+
+    // =========================================================================
+    // --- SYSTEM IDENTIFICATION (WPILib SysId) ---
+    // =========================================================================
+
+    private final MutVoltage m_sysIdVoltage = Volts.mutable(0.0);
+    private final MutAngle m_sysIdAngle = Rotations.mutable(0.0);
+    private final MutAngularVelocity m_sysIdVelocity = RotationsPerSecond.mutable(0.0);
+
+    /**
+     * Characterizes both the front and back shooter NEO flywheels simultaneously while keeping the
+     * feeder off. Note: WPILib SysId reports angular gains in {@code Rotations/sec}; divide
+     * identified {@code kV} (and {@code kP}) by {@code 60.0} when entering REVLib's native RPM
+     * closed-loop configuration.
+     */
+    private final SysIdRoutine m_flywheelSysIdRoutine =
+        new SysIdRoutine(
+            new SysIdRoutine.Config(
+                Volts.of(1.0).per(Second),
+                Volts.of(7.0),
+                Seconds.of(10.0)),
+            new SysIdRoutine.Mechanism(
+                voltage -> setSysIdFlywheelVolts(voltage.in(Volts)),
+                log -> {
+                    log.motor("shooter-front")
+                        .voltage(m_sysIdVoltage.mut_replace(getSparkAppliedVolts(shooterFront), Volts))
+                        .angularPosition(
+                            m_sysIdAngle.mut_replace(shooterFront.getEncoder().getPosition(), Rotations))
+                        .angularVelocity(
+                            m_sysIdVelocity.mut_replace(shooterFront.getEncoder().getVelocity(), RPM));
+                    log.motor("shooter-back")
+                        .voltage(m_sysIdVoltage.mut_replace(getSparkAppliedVolts(shooterBack), Volts))
+                        .angularPosition(
+                            m_sysIdAngle.mut_replace(shooterBack.getEncoder().getPosition(), Rotations))
+                        .angularVelocity(
+                            m_sysIdVelocity.mut_replace(shooterBack.getEncoder().getVelocity(), RPM));
+                },
+                this,
+                "shooter-flywheels"));
+
+    /**
+     * Characterizes the Kraken X60 feeder TalonFX in rotations and rotations/sec (matching Phoenix 6
+     * {@code Slot0} gain units 1:1).
+     */
+    private final SysIdRoutine m_feederSysIdRoutine =
+        new SysIdRoutine(
+            new SysIdRoutine.Config(
+                Volts.of(1.0).per(Second),
+                Volts.of(6.0),
+                Seconds.of(10.0)),
+            new SysIdRoutine.Mechanism(
+                voltage -> setSysIdFeederVolts(voltage.in(Volts)),
+                log -> {
+                    log.motor("shooter-feeder")
+                        .voltage(
+                            m_sysIdVoltage.mut_replace(
+                                feederMain.getMotorVoltage().getValueAsDouble(), Volts))
+                        .angularPosition(
+                            m_sysIdAngle.mut_replace(
+                                feederMain.getPosition().getValueAsDouble(), Rotations))
+                        .angularVelocity(
+                            m_sysIdVelocity.mut_replace(
+                                feederMain.getVelocity().getValueAsDouble(), RotationsPerSecond));
+                },
+                this,
+                "shooter-feeder"));
+
+    private static double getSparkAppliedVolts(SparkMax spark) {
+        return MAXSwerveModule.computeAppliedVolts(
+            spark.getAppliedOutput(),
+            spark.getBusVoltage(),
+            RobotController.getBatteryVoltage(),
+            RobotBase.isSimulation());
+    }
+
+    private void setSysIdFlywheelVolts(double volts) {
+        systemEnabled = false;
+        waitingForSpinUp = false;
+        setFeederDutyCycle(0.0);
+        shooterFront.setVoltage(volts);
+        shooterBack.setVoltage(volts);
+    }
+
+    private void setSysIdFeederVolts(double volts) {
+        systemEnabled = false;
+        waitingForSpinUp = false;
+        shooterFront.set(0.0);
+        shooterBack.set(0.0);
+        feederMain.setControl(feederVoltageRequest.withOutput(volts));
+    }
+
+    /** Returns true once both coast-mode flywheels have spun down near rest (< 60 RPM). */
+    public boolean areFlywheelsStopped() {
+        return Math.abs(shooterFront.getEncoder().getVelocity()) < 60.0
+            && Math.abs(shooterBack.getEncoder().getVelocity()) < 60.0;
+    }
+
+    /** Returns true once the feeder motor velocity is near rest (< 1 rot/s). */
+    public boolean isFeederStopped() {
+        return Math.abs(feederMain.getVelocity().getValueAsDouble()) < 1.0;
+    }
+
+    public Command sysIdFlywheelsQuasistatic(SysIdRoutine.Direction direction) {
+        return m_flywheelSysIdRoutine.quasistatic(direction);
+    }
+
+    public Command sysIdFlywheelsDynamic(SysIdRoutine.Direction direction) {
+        return m_flywheelSysIdRoutine.dynamic(direction);
+    }
+
+    public Command sysIdFeederQuasistatic(SysIdRoutine.Direction direction) {
+        return m_feederSysIdRoutine.quasistatic(direction);
+    }
+
+    public Command sysIdFeederDynamic(SysIdRoutine.Direction direction) {
+        return m_feederSysIdRoutine.dynamic(direction);
     }
 }

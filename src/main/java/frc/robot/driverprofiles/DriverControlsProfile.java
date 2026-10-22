@@ -32,4 +32,16 @@ public interface DriverControlsProfile {
      * robot the alliance comes from the FMS.
      */
     Trigger toggleAllianceTrigger();
+
+    /** Holds a SysId quasistatic forward test on the selected mechanism. */
+    Trigger sysIdQuasistaticForwardTrigger();
+
+    /** Holds a SysId quasistatic reverse test on the selected mechanism. */
+    Trigger sysIdQuasistaticReverseTrigger();
+
+    /** Holds a SysId dynamic forward test on the selected mechanism. */
+    Trigger sysIdDynamicForwardTrigger();
+
+    /** Holds a SysId dynamic reverse test on the selected mechanism. */
+    Trigger sysIdDynamicReverseTrigger();
 }

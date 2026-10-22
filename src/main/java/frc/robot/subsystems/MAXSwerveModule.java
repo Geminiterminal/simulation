@@ -15,6 +15,7 @@ import com.revrobotics.spark.SparkBase.ResetMode;
 import com.revrobotics.spark.SparkClosedLoopController;
 import com.revrobotics.spark.SparkLowLevel.MotorType;
 import com.revrobotics.spark.SparkMax;
+import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.kinematics.SwerveModulePosition;
 import edu.wpi.first.math.kinematics.SwerveModuleState;
@@ -51,6 +52,8 @@ public class MAXSwerveModule {
 
   private double m_chassisAngularOffset = 0;
   private SwerveModuleState m_desiredState = new SwerveModuleState(0.0, new Rotation2d());
+  private double m_lastTurningEncoderRad = 0.0;
+  private double m_continuousTurningAngleRad = 0.0;
 
   // --- Motor & simulation models ---
   private final DCMotor m_driveGearbox = DCMotor.getNEO(1);
@@ -121,8 +124,23 @@ public class MAXSwerveModule {
     }
 
     m_chassisAngularOffset = chassisAngularOffset;
-    m_desiredState.angle = new Rotation2d(m_turningEncoder.getPosition());
+    m_lastTurningEncoderRad = m_turningEncoder.getPosition();
+    m_continuousTurningAngleRad = m_lastTurningEncoderRad - m_chassisAngularOffset;
+    m_desiredState.angle = new Rotation2d(m_lastTurningEncoderRad);
     m_drivingEncoder.setPosition(0);
+  }
+
+  private void updateContinuousTurningAngle() {
+    double currentEncoderRad = m_turningEncoder.getPosition();
+    m_continuousTurningAngleRad =
+        unwrapAngleStepRadians(
+            m_continuousTurningAngleRad, m_lastTurningEncoderRad, currentEncoderRad);
+    m_lastTurningEncoderRad = currentEncoderRad;
+  }
+
+  static double unwrapAngleStepRadians(
+      double previousContinuousRad, double previousRawRad, double currentRawRad) {
+    return previousContinuousRad + MathUtil.angleModulus(currentRawRad - previousRawRad);
   }
 
   /**
@@ -131,6 +149,7 @@ public class MAXSwerveModule {
    * @return The current state of the module.
    */
   public SwerveModuleState getState() {
+    updateContinuousTurningAngle();
     // Apply chassis angular offset to the encoder position to get the position
     // relative to the chassis.
     return new SwerveModuleState(
@@ -144,6 +163,7 @@ public class MAXSwerveModule {
    * @return The current position of the module.
    */
   public SwerveModulePosition getPosition() {
+    updateContinuousTurningAngle();
     // Apply chassis angular offset to the encoder position to get the position
     // relative to the chassis.
     return new SwerveModulePosition(
@@ -217,6 +237,99 @@ public class MAXSwerveModule {
   }
 
   /**
+   * Holds the module steering at {@code chassisAngle} (without 180-degree optimization flips) while
+   * applying zero drive voltage. Used to pre-align modules before a SysId characterization run.
+   */
+  public void alignForSysId(Rotation2d chassisAngle) {
+    setSysIdDriveVoltsAtAngle(0.0, chassisAngle);
+  }
+
+  /**
+   * Returns true when the module's measured chassis-relative steering angle is within {@code
+   * toleranceRad} of {@code chassisAngle}.
+   */
+  public boolean isAlignedToAngle(Rotation2d chassisAngle, double toleranceRad) {
+    double errorRad =
+        MathUtil.angleModulus(getState().angle.getRadians() - chassisAngle.getRadians());
+    return Math.abs(errorRad) <= toleranceRad;
+  }
+
+  /**
+   * Applies open-loop {@code volts} directly to the drive SPARK MAX while holding the steering
+   * controller at {@code chassisAngle} with NO 180-degree state optimization, ensuring {@code
+   * +volts} always drives along {@code +chassisAngle} and {@code -volts} along {@code
+   * -chassisAngle}.
+   */
+  public void setSysIdDriveVoltsAtAngle(double volts, Rotation2d chassisAngle) {
+    double targetEncoderAngleRad =
+        MathUtil.inputModulus(
+            chassisAngle.getRadians() + m_chassisAngularOffset, 0.0, 2.0 * Math.PI);
+    m_turningClosedLoopController.setSetpoint(targetEncoderAngleRad, ControlType.kPosition);
+    m_drivingSpark.setVoltage(volts);
+    m_desiredState = new SwerveModuleState(0.0, chassisAngle);
+  }
+
+  /**
+   * Applies open-loop {@code volts} directly to the steering SPARK MAX while keeping the drive
+   * motor at 0 V, for azimuth SysId characterization.
+   */
+  public void setSysIdSteerVolts(double volts) {
+    m_drivingSpark.setVoltage(0.0);
+    m_turningSpark.setVoltage(volts);
+  }
+
+  /** Returns the applied output voltage (Volts) on the drive motor. */
+  public double getDriveAppliedVolts() {
+    return computeAppliedVolts(
+        m_drivingSpark.getAppliedOutput(),
+        m_drivingSpark.getBusVoltage(),
+        RobotController.getBatteryVoltage(),
+        RobotBase.isSimulation());
+  }
+
+  /** Returns the drive wheel linear position in meters. */
+  public double getDrivePositionMeters() {
+    return m_drivingEncoder.getPosition();
+  }
+
+  /** Returns the drive wheel linear velocity in meters per second. */
+  public double getDriveVelocityMetersPerSecond() {
+    return m_drivingEncoder.getVelocity();
+  }
+
+  /** Returns the applied output voltage (Volts) on the steering motor. */
+  public double getSteerAppliedVolts() {
+    return computeAppliedVolts(
+        m_turningSpark.getAppliedOutput(),
+        m_turningSpark.getBusVoltage(),
+        RobotController.getBatteryVoltage(),
+        RobotBase.isSimulation());
+  }
+
+  /**
+   * Returns the continuous (unwrapped) chassis-relative steering angle in radians so multi-turn
+   * azimuth SysId tests never jump across the [0, 2pi) absolute-encoder wrap boundary.
+   */
+  public double getContinuousSteerPositionRadians() {
+    updateContinuousTurningAngle();
+    return m_continuousTurningAngleRad;
+  }
+
+  /** Returns the steering angular velocity in radians per second. */
+  public double getSteerVelocityRadiansPerSecond() {
+    return m_turningEncoder.getVelocity();
+  }
+
+  public static double computeAppliedVolts(
+      double appliedOutput, double sparkBusVolts, double batteryVolts, boolean isSimulation) {
+    double busVolts = sparkBusVolts;
+    if (isSimulation && (!Double.isFinite(busVolts) || busVolts <= 0.0)) {
+      busVolts = (Double.isFinite(batteryVolts) && batteryVolts > 0.0) ? batteryVolts : 12.0;
+    }
+    return appliedOutput * busVolts;
+  }
+
+  /**
    * Steps the motor physics for this module. Called once per robot loop from {@link DriveSubsystem}
    * in simulation only.
    *
@@ -249,6 +362,7 @@ public class MAXSwerveModule {
     m_drivingSparkSim.iterate(wheelSpeedMetersPerSec, busVoltage, dtSeconds);
     m_turningSparkSim.iterate(moduleTurnRateRadPerSec, busVoltage, dtSeconds);
     m_turningEncoderSim.iterate(moduleTurnRateRadPerSec, dtSeconds);
+    updateContinuousTurningAngle();
   }
 
   /** Converts wheel output angular rate (rad/s) to linear wheel speed (m/s) for SparkSim. */

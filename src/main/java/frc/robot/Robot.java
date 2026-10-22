@@ -22,9 +22,12 @@ public class Robot extends TimedRobot {
 
   @Override
   public void robotInit() {
-    m_robotContainer = new RobotContainer();
+    // Start WPILib data logging before constructing RobotContainer so SysIdRoutineLog
+    // entries and dashboard choosers attach to the active .wpilog immediately.
     DataLogManager.start();
     DriverStation.startDataLog(DataLogManager.getLog());
+
+    m_robotContainer = new RobotContainer();
 
     batteryVoltageLog = new DoubleLogEntry(
         DataLogManager.getLog(),
