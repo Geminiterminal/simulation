@@ -22,7 +22,7 @@ M20,shooter,Feeder drum diameter and length,mm,,not in code,,me,,"Prompt 4.5 ass
 M21,shooter,Feeder drum centre height above the ball path,mm,,not in code,,me,,
 M22,intake,Deploy pivot position x y z,mm,,not in code,,me,,
 M23,intake,Pivot to roller centre distance,mm,300,estimate,Constants.java:253,,me,,"Sim uses 300 mm and 3 kg for arm inertia"
-M24,intake,Intake width (roller length),mm,,not in code,,me,,"Prompt 4.7 assumes 660"
+M24,intake,Intake width (roller length),mm,,not in code,,me,,"Prompt 4.7 assumes 500"
 M25,intake,Roller diameter,mm,,not in code,,me,,"Prompt 4.7 assumes 25.4; code drives it to 5600 rpm"
 M26,intake,Deploy arm mass,kg,3.0,estimate,Constants.java:254,,me,,
 M27,intake,Stowed and deployed arm angles,deg,0 to 100,code,Constants.java:256-257,,me,,"Hard limit 105"

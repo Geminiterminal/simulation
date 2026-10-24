@@ -529,5 +529,376 @@
       "max": 139.7,
       "note": "2.75 in to 5.5 in above the floor"
     }
+  },
+  "mechanisms": {
+    "$comment": "MECHANISM-LEVEL PACKAGING MODEL. Every value here is NOMINAL: it is chosen so the mechanisms are mutually consistent, not measured from the robot. Replace values marked (N) from measurements.csv, then re-run the prompts. Each mechanism is modelled in its own local frame and placed by the insert transform below, so importing a mechanism needs no assembly math.",
+    "layout_reference": {
+      "frame_outer": {
+        "x": 633.9,
+        "y": 773.6,
+        "note": "lower bound = union of the four module bodies; M01/M02"
+      },
+      "frame_rail": {
+        "thickness": 25.4,
+        "height": 50.8,
+        "note": "1x2 in MAXTube; M04"
+      },
+      "frame_levels": {
+        "bottom_z": [
+          50.6,
+          101.4
+        ],
+        "top_z": [
+          219.2,
+          270.0
+        ],
+        "note": "(N) frame height M05"
+      },
+      "deck_z": 270.0,
+      "belly_z": [
+        20.0,
+        23.175
+      ],
+      "free_span_between_front_modules_y": 400.3
+    },
+    "placement_convention": "Insert each mechanism into the assembly with origin-to-origin translation and a yaw about +Z. Values are robot-frame millimetres. A tilt is applied about the local Y after the yaw where listed.",
+    "items": [
+      {
+        "id": "drivetrain",
+        "name": "Drivetrain (frame)",
+        "local_origin": "robot origin, floor plane",
+        "envelope": {
+          "x": [
+            -316.95,
+            316.95
+          ],
+          "y": [
+            -386.8,
+            386.8
+          ],
+          "z": [
+            0,
+            270
+          ]
+        },
+        "insert": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "yaw": 0
+        },
+        "confidence": "nominal",
+        "note": "modules are downloaded COTS placed at the four module centres"
+      },
+      {
+        "id": "bumpers",
+        "name": "Bumpers",
+        "local_origin": "robot origin, floor plane",
+        "envelope": {
+          "x": [
+            -381.45,
+            381.45
+          ],
+          "y": [
+            -451.3,
+            451.3
+          ],
+          "z": [
+            69.85,
+            139.7
+          ]
+        },
+        "insert": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "yaw": 0
+        },
+        "confidence": "nominal",
+        "note": "outer = frame + 2 x 64.5; R402/R403/R405"
+      },
+      {
+        "id": "intake",
+        "name": "Intake (pivot arm + roller)",
+        "local_origin": "pivot centre, arm along +X at 0 deg",
+        "envelope": {
+          "x": [
+            -60,
+            300
+          ],
+          "y": [
+            -250,
+            250
+          ],
+          "z": [
+            -60,
+            60
+          ],
+          "note": "local; after the +50 deg tilt the absolute box is x 195..519, z 12..345"
+        },
+        "insert": {
+          "x": 280,
+          "y": 0,
+          "z": 280,
+          "yaw": 0,
+          "tilt_about_y_deg": 50
+        },
+        "confidence": "nominal",
+        "note": "arm 300 (code), width 500 (M24), pivot height 280 and +50 deg tilt (N); +50 about Y swings the arm down - roller lands at z ~50"
+      },
+      {
+        "id": "indexer",
+        "name": "Indexer / conveyor",
+        "local_origin": "ball entry end, +X = direction of travel",
+        "envelope": {
+          "x": [
+            0,
+            430
+          ],
+          "y": [
+            -100,
+            100
+          ],
+          "z": [
+            0,
+            160
+          ]
+        },
+        "insert": {
+          "x": 250,
+          "y": 0,
+          "z": 150,
+          "yaw": 180
+        },
+        "confidence": "nominal",
+        "note": "runs from the intake up to the feeder"
+      },
+      {
+        "id": "shooter",
+        "name": "Shooter (opposed flywheel pair)",
+        "local_origin": "midpoint between the two flywheel axles, ball exits -X",
+        "envelope": {
+          "x": [
+            -180,
+            60
+          ],
+          "y": [
+            -150,
+            150
+          ],
+          "z": [
+            -167,
+            167
+          ]
+        },
+        "insert": {
+          "x": -390,
+          "y": 0,
+          "z": 300,
+          "yaw": 0
+        },
+        "confidence": "nominal",
+        "note": "axle pitch 213.6 at 19.05 compression (M15/M16); plate 300 x 334"
+      },
+      {
+        "id": "vision_a",
+        "name": "Camera A bracket",
+        "local_origin": "lens centre, optical axis +X",
+        "envelope": {
+          "x": [
+            0,
+            45
+          ],
+          "y": [
+            -20,
+            20
+          ],
+          "z": [
+            -20,
+            20
+          ]
+        },
+        "insert": {
+          "x": -311.15,
+          "y": -273.05,
+          "z": 434.98,
+          "yaw": 180
+        },
+        "confidence": "code",
+        "note": "transform from Constants.VisionConstants"
+      },
+      {
+        "id": "vision_b",
+        "name": "Camera B bracket",
+        "local_origin": "lens centre, optical axis +X",
+        "envelope": {
+          "x": [
+            0,
+            40
+          ],
+          "y": [
+            -20,
+            20
+          ],
+          "z": [
+            -20,
+            20
+          ]
+        },
+        "insert": {
+          "x": -254.0,
+          "y": -330.2,
+          "z": 411.23,
+          "yaw": -90
+        },
+        "confidence": "code",
+        "note": "faces the robot RIGHT despite the name"
+      },
+      {
+        "id": "electronics",
+        "name": "Electronics (belly pan + component proxies)",
+        "local_origin": "pan centre",
+        "envelope": {
+          "x": [
+            -290,
+            290
+          ],
+          "y": [
+            -360,
+            360
+          ],
+          "z": [
+            0,
+            145
+          ]
+        },
+        "insert": {
+          "x": 0,
+          "y": 0,
+          "z": 20.0,
+          "yaw": 0
+        },
+        "confidence": "nominal",
+        "note": "component positions (M31-M34)"
+      }
+    ],
+    "interfaces": [
+      {
+        "id": "IF-MODULE",
+        "between": [
+          "drivetrain",
+          "COTS module"
+        ],
+        "holes": {
+          "count": 4,
+          "dia": 5.0,
+          "pattern": "88.9 x 88.9 centred on each module centre",
+          "z": 244.6
+        },
+        "confidence": "nominal",
+        "note": "REV tab pattern is 133.1 sq; verify against REV-21-3005.step"
+      },
+      {
+        "id": "IF-SHOOTER",
+        "between": [
+          "drivetrain",
+          "shooter"
+        ],
+        "holes": {
+          "count": 4,
+          "dia": 5.0,
+          "x": -303.7,
+          "y": [
+            -150,
+            150
+          ],
+          "z": [
+            232.0,
+            257.0
+          ]
+        },
+        "confidence": "nominal",
+        "note": "rear top rail"
+      },
+      {
+        "id": "IF-INTAKE",
+        "between": [
+          "drivetrain",
+          "intake"
+        ],
+        "holes": {
+          "count": 2,
+          "dia": 13.0,
+          "x": 280.0,
+          "y": [
+            -60,
+            60
+          ],
+          "z": 280.0,
+          "plus": "4 x dia 5.0 at x 300, y +/-90, z 250"
+        },
+        "confidence": "nominal",
+        "note": "bearing bores for the 1/2 in hex pivot"
+      },
+      {
+        "id": "IF-INDEXER",
+        "between": [
+          "drivetrain",
+          "indexer"
+        ],
+        "holes": {
+          "count": 4,
+          "dia": 5.0,
+          "x": [
+            250.0,
+            -180.0
+          ],
+          "y": [
+            -80,
+            80
+          ],
+          "z": 244.6
+        },
+        "confidence": "nominal",
+        "note": "hangs from the top rails"
+      },
+      {
+        "id": "IF-BELLY",
+        "between": [
+          "drivetrain",
+          "electronics"
+        ],
+        "holes": {
+          "count": 16,
+          "dia": 5.0,
+          "pattern": "10 inboard of the frame outer edge, 100 pitch",
+          "z": 23.175
+        },
+        "confidence": "nominal",
+        "note": "M01/M02 drive the pitch"
+      },
+      {
+        "id": "IF-SHOOTER-INDEXER",
+        "between": [
+          "indexer",
+          "shooter"
+        ],
+        "holes": {
+          "count": 2,
+          "dia": 5.0,
+          "note": "ball hand-off; align at the feeder drum inlet"
+        },
+        "confidence": "nominal",
+        "note": "the one interface that must match in Z as well as X"
+      }
+    ],
+    "legality_check_from_coded_geometry": {
+      "hard_part_perimeter_module_bodies_mm": 2815.0,
+      "hard_part_perimeter_module_bodies_in": 110.83,
+      "hard_part_perimeter_with_tabs_mm": 2945.4,
+      "hard_part_perimeter_with_tabs_in": 115.96,
+      "limit_mm": 2794.0,
+      "finding": "The coded wheel positions (21 x 26.5 in) imply at least a 110.8 in hard-part perimeter before bumpers, and 116.0 in if the module mounting tabs are the outermost parts. Both exceed R104 (110 in). Either the module centres, the module mounting, or the recorded numbers are off. This is the first thing the assembled CAD model should settle."
+    }
   }
 }

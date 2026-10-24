@@ -15,11 +15,17 @@ Two things up front, because they decide how you should use this pack:
    Section 6 is a 15-group tape-measure sheet that closes that gap — do it first, or the CAD will be
    fiction.
 
+> **Want a whole-robot packaging model with less work?** Use
+> [`CAD_MECHANISM_PROMPTS.md`](CAD_MECHANISM_PROMPTS.md) instead: eight self-contained prompts, one per
+> mechanism, each placed in the robot by a stated transform. Use this document when you are ready to
+> cut parts.
+
 Files in this pack:
 
 | File | What it is |
 |---|---|
-| `docs/ROBOT_CAD_PROMPT.md` | this document — the prompts |
+| `docs/ROBOT_CAD_PROMPT.md` | this document — the per-part prompts |
+| `docs/CAD_MECHANISM_PROMPTS.md` | per-mechanism prompts for a packaging model you assemble yourself |
 | `docs/cad/robot-datums.svg` / `.png` | datum drawing: wheel positions, frame envelope, cameras, rule limits |
 | `docs/cad/robot-parameters.json` | every number used below, with provenance and confidence |
 | `docs/cad/measurements.csv` | the tape-measure sheet, pre-filled where the code already answers |
@@ -292,7 +298,7 @@ MAXMotion tuning stops matching.
 
 ```
 Generate one FRC intake roller, millimetres, single body.
-- Core Ø25.4 x «MEASURE_intake_width» long (nominal 660), 6061.
+- Core Ø25.4 x «MEASURE_intake_width» long (nominal 500), 6061.
 - 8 silicone paddle strips, 25 wide, 6 tall, full length, evenly spaced, R2 on the leading edge.
 - Ø12.75 through bore.
 - 2 x Ø6.5 cross holes 30 mm from each end, 90 deg apart, for roll pins.

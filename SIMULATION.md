@@ -264,7 +264,15 @@ in `Constants.VisionConstants`. Sources of each value:
 
 ### CAD / mechanical measurements
 
-The physics constants below are only as good as the measured robot. [`docs/ROBOT_CAD_PROMPT.md`](docs/ROBOT_CAD_PROMPT.md) holds the CAD prompt pack (text-to-CAD prompts per part), the datum drawing ([`docs/cad/robot-datums.png`](docs/cad/robot-datums.png)) and the tape-measure sheet ([`docs/cad/measurements.csv`](docs/cad/measurements.csv)) that turns the values in this table from estimates into measurements.
+The physics constants below are only as good as the measured robot. Two prompt packs turn the robot
+into CAD: [`docs/CAD_MECHANISM_PROMPTS.md`](docs/CAD_MECHANISM_PROMPTS.md) has eight self-contained
+text-to-CAD prompts, one per mechanism, each carrying its own context and the transform that places it
+in the robot (assemble those for a packaging model); [`docs/ROBOT_CAD_PROMPT.md`](docs/ROBOT_CAD_PROMPT.md)
+has the per-part prompts for the pieces that actually get cut. The datum drawing
+([`docs/cad/robot-datums.png`](docs/cad/robot-datums.png)), the nominal mechanism layout
+([`docs/cad/robot-parameters.json`](docs/cad/robot-parameters.json)) and the tape-measure sheet
+([`docs/cad/measurements.csv`](docs/cad/measurements.csv)) turn the values in this table from estimates
+into measurements.
 
 ### Re-calibrating
 

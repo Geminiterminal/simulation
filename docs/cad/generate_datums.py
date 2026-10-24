@@ -48,6 +48,7 @@ FRAME_X = X_MOD * 2 + BODY                          # 633.9
 FRAME_Y = Y_MOD * 2 + BODY                          # 773.6
 CHAMFER = 12.0
 
+MECH = P["mechanisms"]["items"]
 CAM_A = P["vision"]["camera_a"]
 CAM_B = P["vision"]["camera_b"]
 
@@ -100,28 +101,47 @@ for sx, sy, tag in ((1, 1, "FL"), (1, -1, "FR"), (-1, 1, "RL"), (-1, -1, "RR")):
     ax.text(cx - TABS / 2 - 8, cy, tag, fontsize=7.2, color=MID, weight="bold",
             va="center", ha="right")
 
-# -- mechanisms (indicative only) --------------------------------------------
-ax.add_patch(Rectangle((FRAME_X / 2 - 1, -150), 240, 300, fill=False, ec=INTAKE,
-                       lw=1.0, ls=(0, (5, 3)), zorder=2))
-ax.text(FRAME_X / 2 + 120, 0, "INTAKE", fontsize=6.6, color=INTAKE, ha="center", va="center",
-        rotation=90, weight="bold")
-ax.text(FRAME_X / 2 + 120, -162, "arm 300 long\npivot inside frame", fontsize=5.8, color=INTAKE,
-        ha="center", va="top", linespacing=1.5)
+# -- mechanisms: envelopes + insert points, read from robot-parameters.json ---------
+MECH_COLOR = {"intake": INTAKE, "indexer": "#0e7490", "shooter": "#6d28d9",
+              "electronics": "#475569", "vision_a": CAM, "vision_b": CAM,
+              "drivetrain": INK, "bumpers": BUMPER}
+MARKER_OFFSET = {"indexer": (0.0, -46.0)}
+MECH_ABS = {}          # id -> (x0, x1, y0, y1) in robot coordinates, after insert transform
 
-ax.add_patch(Rectangle((-FRAME_X / 2 - 150, -140), 150, 280, fill=False, ec=PLANNER,
-                       lw=1.0, ls=(0, (5, 3)), zorder=2))
-ax.add_patch(Circle((-FRAME_X / 2 + 34, 0), FLY_D / 2, fill=False, ec=PLANNER,
-                    lw=0.8, ls=(0, (2, 2)), zorder=3))
-ax.plot([-FRAME_X / 2 + 34] * 2, [-86, 86], color=PLANNER, lw=0.8, ls=":", zorder=3)
-ax.text(-FRAME_X / 2 - 118, 0, "SHOOTER  (−X face)" , fontsize=6.4, color=PLANNER,
-        ha="center", va="center", rotation=90, weight="bold")
+
+def _rz(x, y, deg):
+    import math as _m
+    a = _m.radians(deg)
+    return x * _m.cos(a) - y * _m.sin(a), x * _m.sin(a) + y * _m.cos(a)
+
+
+for it in MECH:
+    if it["id"] in ("drivetrain", "bumpers"):
+        continue                      # already drawn as the frame / bumper envelopes
+    env, ins = it["envelope"], it["insert"]
+    xs, ys = [], []
+    for lx in (env["x"][0], env["x"][1]):
+        for ly in (env["y"][0], env["y"][1]):
+            rx, ry = _rz(lx, ly, ins.get("yaw", 0))
+            xs.append(rx + ins["x"])
+            ys.append(ry + ins["y"])
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    MECH_ABS[it["id"]] = (x0, x1, y0, y1)
+    c = MECH_COLOR.get(it["id"], MID)
+    ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=c, lw=1.0,
+                           ls=(0, (5, 3)), zorder=2))
+    idx = [m["id"] for m in MECH].index(it["id"]) + 1
+    mk = MARKER_OFFSET.get(it["id"], (0.0, 0.0))
+    mx, my = ins["x"] + mk[0], ins["y"] + mk[1]
+    if mk != (0.0, 0.0):
+        ax.plot([ins["x"], mx], [ins["y"], my], color=c, lw=0.6, zorder=8)
+    ax.add_patch(Circle((mx, my), 12, fc=c, ec="white", lw=0.7, zorder=9))
+    ax.text(mx, my, str(idx), color="white", fontsize=5.9, ha="center",
+            va="center", weight="bold", zorder=10)
 
 # -- cameras ------------------------------------------------------------------
 for cam, tag, note in ((CAM_A, "A", "A  FrontCamera"), (CAM_B, "B", "B  OldLeft")):
     x, y = cam["x"]["value"], cam["y"]["value"]
-    ax.add_patch(Rectangle((x - 10, y - 10), 20, 20, fc=CAM, ec="white", lw=0.6, zorder=6))
-    ax.text(x, y, tag, color="white", fontsize=6.0, ha="center", va="center",
-            weight="bold", zorder=7)
     yaw = math.radians(cam["yaw_deg"])
     ax.add_patch(FancyArrowPatch((x, y), (x + 66 * math.cos(yaw), y + 66 * math.sin(yaw)),
                                  arrowstyle="-|>", mutation_scale=8, lw=1.1, color=CAM, zorder=6))
@@ -169,7 +189,7 @@ vdim(-X_MOD, X_MOD, -600, "WHEELBASE  533.4   (21 in)")
 vdim(-FRAME_X / 2, FRAME_X / 2, 700, "frame length  633.9")
 
 ax.text(-750, 630, "PLAN VIEW", fontsize=9.6, color=INK, weight="bold", va="top")
-ax.text(-750, 600, "robot frame: +X forward, +Y left, z up.  Every dimension in mm.",
+ax.text(-750, 600, "robot frame: +X forward, +Y left, z up.  Dashed boxes = mechanism envelopes, dot = insert point.",
         fontsize=6.2, color=MID, va="top")
 
 # ============================================================= ELEVATION ====
@@ -264,12 +284,17 @@ right = (
     "                     muzzle: the only camera whose line of sight is parallel to the shot.\n"
     "CAMERA B             Faces the robot's RIGHT (−Y). The old name/comments in Constants.java say\n"
     "                     'left'; the transform is what counts, and it is −90°.\n"
-    "INTAKE / SHOOTER     Envelopes only. Shape, width, pivot location, stack height and the flywheel\n"
-    "                     axle pitch are NOT in the code. Section 6 of ROBOT_CAD_PROMPT.md lists the\n"
-    "                     ~15 tape measurements that turn this drawing into a real CAD model.\n"
+    "ENVELOPES            Nominal, not measured: chosen so the mechanisms are mutually consistent.\n"
+    "                     Frame height, intake width and tilt, shooter overhang and the electronics\n"
+    "                     layout are NOT in the code - replace them from measurements.csv.\n"
     "GREEN                Bumper envelopes: dashed = 57.15 min padding, dotted = 101.6 max\n"
     "                     extension from the frame perimeter (R402, R403). Vertical band 69.9-139.7\n"
     "                     above the floor (R405) is shown in the elevation only.\n"
+    "MECHANISMS           1 frame (solid outline)  2 bumpers (green)  3 intake  4 indexer  5 shooter\n"
+    "                     6 camera A  7 camera B  8 electronics. Each numbered dot is that\n"
+    "                     mechanism's insert point (origin-to-origin); the dashed box is its\n"
+    "                     envelope in the robot frame. Full placement table: section 2 of\n"
+    "                     docs/CAD_MECHANISM_PROMPTS.md.\n"
     "MASS                 Sim assumes 65 kg = 143.3 lb. 2026 limits: 115 lb (R103), 135 lb with\n"
     "                     bumpers (R408). Weigh the robot."
 )
