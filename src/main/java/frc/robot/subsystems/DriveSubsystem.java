@@ -53,8 +53,11 @@ import com.studica.frc.AHRS.NavXComType;
 import frc.robot.AutoTuning;
 import frc.robot.Constants.DriveConstants;
 import frc.robot.Constants.FieldConstants;
+import frc.robot.Constants.ShooterConstants;
 import frc.robot.Constants.SimulationConstants;
 import frc.robot.Constants.VisionConstants;
+import frc.robot.ShotMath;
+import frc.robot.ShooterTuning;
 import frc.robot.driverprofiles.ThrustmasterProfile;
 
 import com.pathplanner.lib.config.PIDConstants;
@@ -1096,15 +1099,34 @@ public class DriveSubsystem extends SubsystemBase {
   // --- ODOMETRY AIMING FOR TELEOP & PATHPLANNER ---
   // =========================================================================
 
+  /**
+   * Full aim solution for the current pose: the heading that points the
+   * shooter at the hub, plus the distance from the muzzle (not the robot
+   * center) to the hub.
+   *
+   * <p>Uses {@link ShotMath#solveAim} so the shooter's mounting offset and the
+   * mechanical heading trim are applied consistently everywhere. With the
+   * offsets left at zero this reduces exactly to the old
+   * {@code atan2(dy, dx) - 180} formula.
+   */
+  public ShotMath.AimSolution getAimSolution() {
+      return ShotMath.solveAim(
+          getPose(),
+          getHubLocation(),
+          ShooterConstants.kMuzzleOffsetMeters,
+          ShooterConstants.kShooterFacingOffsetDegrees,
+          ShooterTuning.headingTrimDegrees(),
+          ShotMath.kDefaultIterations);
+  }
+
   /** Calculates the exact field-relative angle the robot needs to face to shoot at the Hub */
   public double getAngleToHub() {
-      // 1. Calculate distance from the ROBOT to the HUB
-      // UPDATED: Now uses getHubLocation()
-      double xDist = getHubLocation().getX() - getPose().getX();
-      double yDist = getHubLocation().getY() - getPose().getY();
-      
-      // 2. Find the angle and apply the -180 degree offset
-      return Math.toDegrees(Math.atan2(yDist, xDist)) - 180.0;
+      return getAimSolution().headingDegrees();
+  }
+
+  /** Distance from the shooter muzzle to the hub center, in meters. */
+  public double getShotDistanceMeters() {
+      return getAimSolution().distanceMeters();
   }
 
   /**

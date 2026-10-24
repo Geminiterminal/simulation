@@ -3,6 +3,8 @@ package frc.robot;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.math.filter.SlewRateLimiter;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -31,6 +33,7 @@ import frc.robot.commands.DeployIntake;
 import frc.robot.commands.AutoAimAndShoot;
 import frc.robot.commands.StowIntake;
 import frc.robot.Constants.OIConstants;
+import frc.robot.Constants.ShooterConstants;
 import frc.robot.driverprofiles.DriverControlsProfile;
 import frc.robot.driverprofiles.ThrustmasterProfile;
 import frc.robot.driverprofiles.XboxHanifStyleProfile;
@@ -85,12 +88,20 @@ public class RobotContainer {
     private DriverProfile m_lastProfile = null;
     private boolean m_isSlowMode = false;
 
+    /** Latched once the robot has lined up; ranging then happens while still tracking the hub. */
+    private boolean m_rangingEngaged = false;
+
     public RobotContainer() {
         m_visionPID.enableContinuousInput(-180.0, 180.0);
         m_headingSnapPID.enableContinuousInput(-180.0, 180.0);
         m_headingSnapPID.setTolerance(2.0);
 
         AutoTuning.publishDefaults();
+        ShooterTuning.publishDefaults();
+
+        // Hand the shooter a live view of the aim geometry and chassis motion.
+        // This is what lets it hold the feeder if the shot is not lined up.
+        shooter.setShotInputSupplier(this::shotInputs);
 
         // In simulation: give the camera sim the drivetrain's ground truth so
         // the PhotonVision fusion pipeline runs against synthetic AprilTag
@@ -306,80 +317,115 @@ public class RobotContainer {
             Commands.runOnce(() -> {
                 isAutoAimFinished = false;
                 isAutoDistanceFinished = false;
+                m_rangingEngaged = false;
                 m_visionPID.reset();
                 xSpeedLimiter.reset(0.0);
                 ySpeedLimiter.reset(0.0);
                 rotLimiter.reset(0.0);
             }),
-            new RunCommand(this::runAutoAim, m_robotDrive).until(this::isAutoAimFinished),
-            Commands.runOnce(() -> {
-                xSpeedLimiter.reset(0.0);
-                ySpeedLimiter.reset(0.0);
-            }),
-            new RunCommand(this::runAutoDistance, m_robotDrive).until(this::isAutoDistanceFinished),
-            new RunCommand(this::holdAutoDistance, m_robotDrive)
+            // One command that keeps aiming for as long as the button is held.
+            // The old sequence stopped correcting heading the moment it moved
+            // on to ranging, so a push from defense or a bump during the drive
+            // left the robot firing several degrees off the hub.
+            new RunCommand(this::trackHubAndRange, m_robotDrive)
         );
     }
 
-    private void runAutoAim() {
+    /**
+     * Aim at the hub and, once lined up, range to the calibrated shooting
+     * distance - while continuing to correct heading. With the distance table
+     * enabled the robot shoots from where it stands instead of driving.
+     */
+    private void trackHubAndRange() {
         m_visionPID.setPID(AutoTuning.aimHeadingP(), 0.0, 0.0);
-        double rot = m_visionPID.calculate(
-            m_robotDrive.getPose().getRotation().getDegrees(),
-            m_robotDrive.getAngleToHub());
 
-        m_robotDrive.drive(
-            xSpeedLimiter.calculate(0.0),
-            ySpeedLimiter.calculate(0.0),
-            rot);
-    }
-
-    private boolean isAutoAimFinished() {
-        double headingError = MathUtil.inputModulus(
-            m_robotDrive.getAngleToHub() - m_robotDrive.getPose().getRotation().getDegrees(),
-            -180.0,
-            180.0);
+        double currentHeading = m_robotDrive.getPose().getRotation().getDegrees();
+        double targetHeading = m_robotDrive.getAngleToHub();
+        double headingError = MathUtil.inputModulus(targetHeading - currentHeading, -180.0, 180.0);
 
         SmartDashboard.putNumber("Auto Aim Error (deg)", headingError);
         isAutoAimFinished = Math.abs(headingError) <= AutoTuning.aimHeadingToleranceDeg();
-        return isAutoAimFinished;
-    }
 
-    private void runAutoDistance() {
+        double rot = m_visionPID.calculate(currentHeading, targetHeading);
+
+        if (!m_rangingEngaged) {
+            if (!isAutoAimFinished) {
+                isAutoDistanceFinished = false;
+                m_robotDrive.drive(0.0, 0.0, rot);
+                return;
+            }
+            m_rangingEngaged = true;
+            xSpeedLimiter.reset(0.0);
+        }
+
         double distanceError = getAutoDistanceErrorMeters();
-        double maxSpeed = AutoTuning.aimDistanceMaxSpeed();
+        SmartDashboard.putNumber("Auto Distance Error (m)", distanceError);
+
+        if (ShooterTuning.useDistanceTable()) {
+            // The table adapts the shot to the current distance, so there is
+            // nothing to drive to - hold position and keep tracking.
+            isAutoDistanceFinished = true;
+            m_robotDrive.drive(0.0, 0.0, rot);
+            return;
+        }
+
+        isAutoDistanceFinished =
+            Math.abs(distanceError) <= AutoTuning.aimDistanceToleranceMeters();
+        if (isAutoDistanceFinished) {
+            m_robotDrive.drive(0.0, 0.0, rot);
+            return;
+        }
+
         double autoSpeed = AUTO_DISTANCE_DIRECTION * MathUtil.clamp(
             distanceError * AutoTuning.aimDistanceKp(),
-            -maxSpeed,
-            maxSpeed);
-
-        SmartDashboard.putNumber("Auto Distance Error (m)", distanceError);
+            -AutoTuning.aimDistanceMaxSpeed(),
+            AutoTuning.aimDistanceMaxSpeed());
         SmartDashboard.putNumber("Auto Distance Speed", autoSpeed);
 
-        m_robotDrive.driveRobotRelativeNormalized(
-            xSpeedLimiter.calculate(autoSpeed),
-            0.0,
-            0.0);
+        // Range with a robot-relative translation, expressed in the field
+        // frame so the same call can also keep the heading locked on.
+        double headingRadians = m_robotDrive.getPose().getRotation().getRadians();
+        double limitedSpeed = xSpeedLimiter.calculate(autoSpeed);
+        m_robotDrive.drive(
+            limitedSpeed * Math.cos(headingRadians),
+            limitedSpeed * Math.sin(headingRadians),
+            rot);
     }
 
-    private boolean isAutoDistanceFinished() {
-        isAutoDistanceFinished =
-            Math.abs(getAutoDistanceErrorMeters()) <= AutoTuning.aimDistanceToleranceMeters();
-        return isAutoDistanceFinished;
-    }
-
+    /** Distance error to the calibrated shooting distance, measured from the muzzle. */
     private double getAutoDistanceErrorMeters() {
-        double targetDistanceInches = AutoTuning.aimTargetDistanceInches();
-        double targetDistanceMeters = Units.inchesToMeters(targetDistanceInches);
-
-        Translation2d robotToHub = m_robotDrive.getHubLocation().minus(m_robotDrive.getPose().getTranslation());
-        double distanceToHub = robotToHub.getNorm();
-
-        return distanceToHub - targetDistanceMeters;
+        double targetDistanceMeters = Units.inchesToMeters(AutoTuning.aimTargetDistanceInches());
+        return m_robotDrive.getShotDistanceMeters() - targetDistanceMeters;
     }
 
-    private void holdAutoDistance() {
-        SmartDashboard.putNumber("Auto Distance Error (m)", getAutoDistanceErrorMeters());
-        m_robotDrive.driveRobotRelativeNormalized(0.0, 0.0, 0.0);
+    /**
+     * Live shooter inputs: hub geometry from the muzzle, chassis speed and yaw
+     * rate. Read by {@link Shooter#periodic()} every loop through the supplier
+     * installed in the constructor.
+     */
+    private ShotInputs shotInputs() {
+        Pose2d pose = m_robotDrive.getPose();
+        ShotMath.AimSolution aim = m_robotDrive.getAimSolution();
+
+        ChassisSpeeds fieldSpeeds = ChassisSpeeds.fromRobotRelativeSpeeds(
+            m_robotDrive.getRobotRelativeSpeeds(), pose.getRotation());
+        Translation2d muzzle = ShotMath.muzzlePosition(
+            pose.getTranslation(), ShooterConstants.kMuzzleOffsetMeters, pose.getRotation());
+        double closingSpeed = ShotMath.closingSpeed(
+            muzzle,
+            m_robotDrive.getHubLocation(),
+            fieldSpeeds.vxMetersPerSecond,
+            fieldSpeeds.vyMetersPerSecond);
+
+        double headingError = MathUtil.inputModulus(
+            aim.headingDegrees() - pose.getRotation().getDegrees(), -180.0, 180.0);
+
+        return new ShotInputs(
+            aim.distanceMeters(),
+            headingError,
+            Math.hypot(fieldSpeeds.vxMetersPerSecond, fieldSpeeds.vyMetersPerSecond),
+            m_robotDrive.getTurnRate(),
+            closingSpeed);
     }
 
     private Command snapToHeadingCommand(double targetDegrees) {
