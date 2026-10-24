@@ -262,6 +262,10 @@ in `Constants.VisionConstants`. Sources of each value:
 | Deploy arm length/mass | 0.30 m / 3.0 kg | Estimate — measure the arm |
 | Cameras | 1280×720, 75° diag FOV, 30 fps, 30±5 ms latency | Typical OV9281-class cam; **re-calibrate with PhotonVision cal tool and paste in numbers** |
 
+### CAD / mechanical measurements
+
+The physics constants below are only as good as the measured robot. [`docs/ROBOT_CAD_PROMPT.md`](docs/ROBOT_CAD_PROMPT.md) holds the CAD prompt pack (text-to-CAD prompts per part), the datum drawing ([`docs/cad/robot-datums.png`](docs/cad/robot-datums.png)) and the tape-measure sheet ([`docs/cad/measurements.csv`](docs/cad/measurements.csv)) that turns the values in this table from estimates into measurements.
+
 ### Re-calibrating
 
 - **Drivetrain / flywheel MOIs**: run

@@ -1,0 +1,69 @@
+value,value_in_mm,unit,source_file,line,expression_or_note
+wheelbase,533.4,mm,src/main/java/frc/robot/Constants.java,38,kWheelBase = Units.inchesToMeters(21)
+track_width,673.1,mm,src/main/java/frc/robot/Constants.java,36,kTrackWidth = Units.inchesToMeters(26.5)
+module_center_FL,266.7 / 336.55,mm,src/main/java/frc/robot/Constants.java,41,kWheelBase/2 , kTrackWidth/2
+module_center_FR,266.7 / -336.55,mm,src/main/java/frc/robot/Constants.java,42,kWheelBase/2 , -kTrackWidth/2
+module_center_RL,-266.7 / 336.55,mm,src/main/java/frc/robot/Constants.java,43,-kWheelBase/2 , kTrackWidth/2
+module_center_RR,-266.7 / -336.55,mm,src/main/java/frc/robot/Constants.java,44,-kWheelBase/2 , -kTrackWidth/2
+drive_pinion_teeth,13,teeth,src/main/java/frc/robot/Constants.java,73,kDrivingMotorPinionTeeth
+drive_reduction,5.0769,ratio,src/main/java/frc/robot/Constants.java,81,(45*22)/(13*15)
+wheel_diameter,76.2,mm,src/main/java/frc/robot/Constants.java,77,kWheelDiameterMeters = 0.0762
+neo_free_speed,5676,rpm,src/main/java/frc/robot/Constants.java,107,NeoMotorConstants.kFreeSpeedRpm
+free_speed,4.46,m/s,src/main/java/frc/robot/Constants.java,82,kDriveWheelFreeSpeedRps = rpm/60*c/ratio
+steer_reduction,46.4236,ratio,src/main/java/frc/robot/Constants.java,214,9424.0/203.0
+gyro_reversed,false,bool,src/main/java/frc/robot/Constants.java,66,kGyroReversed
+camera_a_x,-311.15,mm,src/main/java/frc/robot/Constants.java,150,Units.inchesToMeters(-12.25)
+camera_a_y,-273.05,mm,src/main/java/frc/robot/Constants.java,151,Units.inchesToMeters(-10.75)
+camera_a_z,434.98,mm,src/main/java/frc/robot/Constants.java,152,Units.inchesToMeters(17.125)
+camera_a_yaw,180,deg,src/main/java/frc/robot/Constants.java,157,Units.degreesToRadians(180.0)
+camera_b_x,-254.0,mm,src/main/java/frc/robot/Constants.java,163,Units.inchesToMeters(-10)
+camera_b_y,-330.2,mm,src/main/java/frc/robot/Constants.java,164,Units.inchesToMeters(-13)
+camera_b_z,411.23,mm,src/main/java/frc/robot/Constants.java,165,Units.inchesToMeters(16.19)
+camera_b_yaw,-90,deg,src/main/java/frc/robot/Constants.java,170,Units.degreesToRadians(-90.0)
+robot_mass,65.0,kg,src/main/java/frc/robot/Constants.java,204,kRobotMassKg
+robot_yaw_moi,5.7,kg m^2,src/main/java/frc/robot/Constants.java,205,kRobotMOIKgMetersSquared
+shooter_flywheel_moi,0.0025,kg m^2,src/main/java/frc/robot/Constants.java,235,kShooterFlywheelMoiKgMetersSquared
+feeder_moi,0.001,kg m^2,src/main/java/frc/robot/Constants.java,238,kFeederMoiKgMetersSquared
+intake_roller_moi,0.0008,kg m^2,src/main/java/frc/robot/Constants.java,245,kIntakeRollerMoiKgMetersSquared
+conveyor_moi,0.002,kg m^2,src/main/java/frc/robot/Constants.java,247,kConveyorMoiKgMetersSquared
+deploy_arm_ratio,212.4,ratio,src/main/java/frc/robot/Constants.java,252,59.0*360.0/100.0
+deploy_arm_length,300.0,mm,src/main/java/frc/robot/Constants.java,253,kDeployArmLengthMeters = 0.30
+deploy_arm_mass,3.0,kg,src/main/java/frc/robot/Constants.java,254,kDeployArmMassKg
+deploy_arm_max_angle,105,deg,src/main/java/frc/robot/Constants.java,258,kDeployArmMaxAngleRad
+field_length,16540,mm,src/main/java/frc/robot/Constants.java,121,kFieldLengthMeters
+field_width,8070,mm,src/main/java/frc/robot/Constants.java,124,kFieldWidthMeters
+blue_hub,4626 / 4035,mm,src/main/java/frc/robot/Constants.java,127-128,kBlueHubX , kBlueHubY
+red_hub,11919 / 4029,mm,src/main/java/frc/robot/Constants.java,131-132,kRedHubX , kRedHubY
+front_flywheel_rpm,1500,rpm,src/main/java/frc/robot/subsystems/Shooter.java,77,m_fronttargetRPM
+back_flywheel_rpm,2000,rpm,src/main/java/frc/robot/subsystems/Shooter.java,78,m_backtargetRPM
+feeder_rpm,4500,rpm,src/main/java/frc/robot/subsystems/Shooter.java,90,FEEDER_TARGET_RPM
+flywheel_can_ids,5 / 6,id,src/main/java/frc/robot/subsystems/Shooter.java,72-73,SHOOTER_ID_1 / SHOOTER_ID_2
+feeder_can_id,7,id,src/main/java/frc/robot/subsystems/Shooter.java,74,FEEDER_ID_1
+roller_rpm,5600,rpm,src/main/java/frc/robot/subsystems/Intake.java,73,ROLLER_TARGET_RPM
+conveyor_rpm,4500,rpm,src/main/java/frc/robot/subsystems/Intake.java,66,CONVEYOR_TARGET_RPM
+deploy_position,59,motor rotations,src/main/java/frc/robot/subsystems/Intake.java,81,DEPLOY_POSITION
+deploy_can_id,9,id,src/main/java/frc/robot/subsystems/Intake.java,122,DEPLOY_MOTOR_ID
+roller_can_id,1,id,src/main/java/frc/robot/subsystems/Intake.java,123,ROLLER_MOTOR_ID
+conveyor_can_id,19,id,src/main/java/frc/robot/subsystems/Intake.java,124,CONVEYOR_MOTOR_ID
+pathplanner_robot_width,876,mm,src/main/deploy/pathplanner/settings.json,2,robotWidth = 0.876 (unverified placeholder)
+pathplanner_robot_length,902,mm,src/main/deploy/pathplanner/settings.json,3,robotLength = 0.902 (unverified placeholder)
+pathplanner_robot_mass,65.0,kg,src/main/deploy/pathplanner/settings.json,12,robotMass
+pathplanner_robot_moi,5.7,kg m^2,src/main/deploy/pathplanner/settings.json,13,robotMOI
+max_drive_speed,4.2,m/s,src/main/deploy/pathplanner/settings.json,10,maxDriveSpeed
+wheel_cof,1.2,-,src/main/deploy/pathplanner/settings.json,18,wheelCOF
+default_shoot_distance,2540,mm,src/main/java/frc/robot/commands/AutoAimAndShoot.java,31,AUTO_AIM_DEFAULT_DISTANCE_IN = 100
+module_body_footprint,100.5,mm,vendor REV-21-3005 spec,-,3.96 in
+module_footprint_with_tabs,133.1,mm,vendor REV-21-3005 spec,-,5.24 in
+module_height_with_neo,171.5,mm,vendor REV-21-3005 spec,-,6.75 in
+module_mass,1.72,kg,vendor REV-21-3005 spec,-,1720 g
+module_wheel_width,22.2,mm,vendor REV 3in MAXSwerve wheel,-,7/8 in
+fuel_diameter,150.11,mm,2026 Game Manual 5.10.1,-,5.91 in
+fuel_mass,0.203,kg,AndyMark am-5801,-,0.448-0.5 lb
+rule_r103_mass,52.16,kg,2026 Game Manual R103,-,115 lb without bumpers and battery
+rule_r408_mass,61.23,kg,2026 Game Manual R408,-,135 lb with bumpers
+rule_r104_perimeter,2794,mm,2026 Game Manual R104,-,110 in starting configuration
+rule_r104_height,762,mm,2026 Game Manual R104,-,30 in starting configuration
+rule_r403_bumper_extension,101.6,mm,2026 Game Manual R403,-,4.0 in
+rule_r404_hard_part,31.75,mm,2026 Game Manual R404,-,1.25 in
+rule_r402_padding_depth,57.15,mm,2026 Game Manual R402-A,-,2.25 in
+rule_r405_band,69.85 to 139.7,mm,2026 Game Manual R405,-,2.75 in to 5.5 in above the floor
