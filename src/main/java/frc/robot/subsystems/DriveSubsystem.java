@@ -1198,6 +1198,95 @@ public class DriveSubsystem extends SubsystemBase {
     SmartDashboard.putNumber("Sim/Pose Estimate Error Heading (deg)", MathUtil.inputModulus(
         getPose().getRotation().getDegrees() - m_simRobotPose.getRotation().getDegrees(),
         -180.0, 180.0));
+
+    // 5. Per-module telemetry + module heading arrows, and a stall warning for
+    //    SysId runs that command voltage the simulated SPARKs never apply.
+    publishSimModuleTelemetry();
+    reportSimSysIdStall();
+  }
+
+  /** Module corner labels used for the simulation dashboard keys and field-widget arrows. */
+  private static final String[] kSimModuleLabels = {"FL", "FR", "RL", "RR"};
+
+  /**
+   * Publishes per-module azimuth/drive telemetry and draws an arrow for each module on the
+   * simulation field widget.
+   *
+   * <p>A {@code Drivetrain Steer} SysId run holds the drive wheels at 0 V, so the robot never
+   * translates or rotates and the field widget's robot pose sits perfectly still. Without these
+   * readouts and arrows there is nothing on screen to show that the four NEO 550 azimuth motors are
+   * being swept, which reads exactly like "the steer test does nothing". Everything an azimuth
+   * characterization depends on - commanded volts, applied volts, reported angle, reported rate, and
+   * the unwrapped angle the SysId log records - is published here.
+   */
+  private void publishSimModuleTelemetry() {
+    MAXSwerveModule[] modules = {m_frontLeft, m_frontRight, m_rearLeft, m_rearRight};
+    double steerCurrentAmps = 0.0;
+
+    for (int i = 0; i < modules.length; i++) {
+      MAXSwerveModule module = modules[i];
+      String label = kSimModuleLabels[i];
+      SwerveModuleState state = module.getState();
+
+      SmartDashboard.putNumber("Sim/Steer " + label + " Angle (deg)", state.angle.getDegrees());
+      SmartDashboard.putNumber(
+          "Sim/Steer " + label + " Rate (deg/s)",
+          Math.toDegrees(module.getSteerVelocityRadiansPerSecond()));
+      SmartDashboard.putNumber("Sim/Steer " + label + " Volts", module.getSteerAppliedVolts());
+      SmartDashboard.putNumber("Sim/Drive " + label + " Speed (mps)", state.speedMetersPerSecond);
+      SmartDashboard.putNumber("Sim/Drive " + label + " Volts", module.getDriveAppliedVolts());
+
+      steerCurrentAmps += module.getSimulatedSteerCurrentAmps();
+
+      // Arrow at the module's ground-truth field location, pointing along the wheel heading, so
+      // azimuth motion is visible even when the chassis itself is standing still.
+      Translation2d moduleFieldPosition =
+          m_simRobotPose
+              .getTranslation()
+              .plus(DriveConstants.kModuleTranslations[i].rotateBy(m_simRobotPose.getRotation()));
+      m_simField
+          .getObject(label + " Module")
+          .setPose(
+              new Pose2d(
+                  moduleFieldPosition, m_simRobotPose.getRotation().plus(state.angle)));
+    }
+
+    SmartDashboard.putNumber("Sim/Steer Motor Current (A)", steerCurrentAmps);
+    SmartDashboard.putNumber("Sim/SysId Commanded Volts", m_sysIdCommandedVolts);
+    SmartDashboard.putString("Sim/SysId Last Test", m_sysIdActiveTest);
+    // Exactly what the steer SysId routine logs: SysIdRoutineLog.angularPosition() converts the
+    // unwrapped radian angle to rotations, so this readout and the .wpilog trace must agree.
+    SmartDashboard.putNumber(
+        "Sim/Steer FL Continuous Angle (rot)",
+        m_frontLeft.getContinuousSteerPositionRadians() / (2.0 * Math.PI));
+  }
+
+  /**
+   * REVLib's SPARK simulation forces the applied output to zero while the Driver Station is
+   * disabled, and a SysId routine started from a dashboard button happily keeps running while
+   * disabled. Report that combination once per test instead of silently logging a flat-zero run.
+   */
+  private void reportSimSysIdStall() {
+    if (m_warnedSysIdStalledInSim) {
+      return;
+    }
+    boolean voltageCommanded = Math.abs(m_sysIdCommandedVolts) > 0.25;
+    boolean voltageApplied =
+        Math.abs(m_frontLeft.getSteerAppliedVolts()) > 0.05
+            || Math.abs(m_frontLeft.getDriveAppliedVolts()) > 0.05;
+    if (!voltageCommanded || voltageApplied) {
+      return;
+    }
+    m_warnedSysIdStalledInSim = true;
+    DriverStation.reportWarning(
+        "SysId '"
+            + m_sysIdActiveTest
+            + "' is commanding "
+            + String.format("%.2f", m_sysIdCommandedVolts)
+            + " V but the simulated SPARKs are applying 0 V, so the log will be flat. In REVLib"
+            + " simulation a SPARK only produces output while the Driver Station is enabled:"
+            + " enable the robot and re-run the test.",
+        false);
   }
 
   /**
@@ -1226,6 +1315,25 @@ public class DriveSubsystem extends SubsystemBase {
   private static final double kSysIdAlignToleranceRad = Math.toRadians(5.0);
   private static final double kSysIdAlignTimeoutSeconds = 0.5;
   private static final Rotation2d[] kAngularSysIdModuleAngles = computeAngularSysIdModuleAngles();
+
+  /**
+   * Last voltage handed to a SysId drive callback and the mechanism it belonged to. Published on
+   * the simulation dashboard as {@code Sim/SysId Commanded Volts} / {@code Sim/SysId Last Test} so a
+   * test that never reaches the motors is obvious at a glance.
+   */
+  private double m_sysIdCommandedVolts = 0.0;
+  private String m_sysIdActiveTest = "none";
+  private boolean m_warnedSysIdStalledInSim = false;
+
+  /** Records which SysId mechanism is being swept and at what commanded voltage. */
+  private void recordSysIdCommand(String test, double volts) {
+    if (!test.equals(m_sysIdActiveTest)) {
+      // New test: allow the "commanded but not applied" warning to fire again.
+      m_warnedSysIdStalledInSim = false;
+      m_sysIdActiveTest = test;
+    }
+    m_sysIdCommandedVolts = volts;
+  }
 
   // Mutable unit holders reused every loop to avoid heap allocations during logging.
   private final MutVoltage m_sysIdVoltage = Volts.mutable(0.0);
@@ -1381,6 +1489,7 @@ public class DriveSubsystem extends SubsystemBase {
 
   private void setSysIdLinearVolts(double volts) {
     clearHeadingHoldForSysId();
+    recordSysIdCommand("drive-linear", volts);
     m_frontLeft.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
     m_frontRight.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
     m_rearLeft.setSysIdDriveVoltsAtAngle(volts, Rotation2d.kZero);
@@ -1389,6 +1498,7 @@ public class DriveSubsystem extends SubsystemBase {
 
   private void setSysIdAngularVolts(double volts) {
     clearHeadingHoldForSysId();
+    recordSysIdCommand("drive-angular", volts);
     m_frontLeft.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[0]);
     m_frontRight.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[1]);
     m_rearLeft.setSysIdDriveVoltsAtAngle(volts, kAngularSysIdModuleAngles[2]);
@@ -1397,6 +1507,7 @@ public class DriveSubsystem extends SubsystemBase {
 
   private void setSysIdSteerVolts(double volts) {
     clearHeadingHoldForSysId();
+    recordSysIdCommand("drive-steer", volts);
     m_frontLeft.setSysIdSteerVolts(volts);
     m_frontRight.setSysIdSteerVolts(volts);
     m_rearLeft.setSysIdSteerVolts(volts);
@@ -1465,13 +1576,16 @@ public class DriveSubsystem extends SubsystemBase {
 
   /** Runs a steering-motor quasistatic SysId test across all four swerve modules. */
   public Command sysIdSteerQuasistatic(SysIdRoutine.Direction direction) {
-    return Commands.runOnce(this::clearHeadingHoldForSysId)
+    // Require the drivetrain from the very first instant (the linear/angular tests do this through
+    // their pre-align phase) so the default teleop drive command cannot land a closed-loop steering
+    // setpoint between the heading-hold clear and the routine itself.
+    return Commands.runOnce(this::clearHeadingHoldForSysId, this)
         .andThen(m_steerSysIdRoutine.quasistatic(direction));
   }
 
   /** Runs a steering-motor dynamic SysId test across all four swerve modules. */
   public Command sysIdSteerDynamic(SysIdRoutine.Direction direction) {
-    return Commands.runOnce(this::clearHeadingHoldForSysId)
+    return Commands.runOnce(this::clearHeadingHoldForSysId, this)
         .andThen(m_steerSysIdRoutine.dynamic(direction));
   }
 }

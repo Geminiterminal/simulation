@@ -410,5 +410,123 @@ class SysIdPhysicsIdentificationTest(unittest.TestCase):
         self.assertGreater(ka, 0.0)
 
 
+class SteerSysIdSimulationVisibilityTest(unittest.TestCase):
+    """A 'Drivetrain Steer' run holds the drive wheels at 0 V, so the chassis never translates or
+    rotates and the field widget's robot pose sits perfectly still. These tests keep the azimuth
+    sweep observable in simulation (dashboard telemetry + per-module heading arrows) and keep a
+    commanded-but-never-applied voltage from being silently logged as a flat, empty test."""
+
+    def setUp(self):
+        self.drive_src = (JAVA_ROOT / "subsystems/DriveSubsystem.java").read_text()
+        self.module_src = (JAVA_ROOT / "subsystems/MAXSwerveModule.java").read_text()
+
+    def test_steer_telemetry_and_module_arrows_are_published_every_sim_loop(self):
+        sim_periodic = self.drive_src[
+            self.drive_src.index("public void simulationPeriodic()") :
+        ]
+        self.assertIn("publishSimModuleTelemetry();", sim_periodic)
+        self.assertIn("reportSimSysIdStall();", sim_periodic)
+
+        for key in (
+            'Sim/Steer " + label + " Angle (deg)',
+            'Sim/Steer " + label + " Rate (deg/s)',
+            'Sim/Steer " + label + " Volts',
+            'Sim/Drive " + label + " Speed (mps)',
+        ):
+            self.assertIn(key, self.drive_src)
+        self.assertIn("Sim/SysId Commanded Volts", self.drive_src)
+        self.assertIn("Sim/SysId Last Test", self.drive_src)
+
+        # Heading arrows drawn at each module's ground-truth field position.
+        self.assertRegex(
+            self.drive_src, re.compile(r'getObject\(label \+ " Module"\)\s*\n?\s*\.setPose\(')
+        )
+        self.assertIn(
+            "DriveConstants.kModuleTranslations[i].rotateBy(m_simRobotPose.getRotation())",
+            self.drive_src,
+        )
+
+    def test_sim_kinematics_module_order_matches_the_swerve_module_fields(self):
+        constants_src = (JAVA_ROOT / "Constants.java").read_text()
+        translations = constants_src[
+            constants_src.index("kModuleTranslations = {") :
+            constants_src.index("public static final SwerveDriveKinematics kDriveKinematics")
+        ]
+        self.assertEqual(
+            [
+                "new Translation2d(kWheelBase / 2, kTrackWidth / 2)",
+                "new Translation2d(kWheelBase / 2, -kTrackWidth / 2)",
+                "new Translation2d(-kWheelBase / 2, kTrackWidth / 2)",
+                "new Translation2d(-kWheelBase / 2, -kTrackWidth / 2)",
+            ],
+            re.findall(r"new Translation2d\([^)]*\)", translations),
+            "kModuleTranslations must stay in FL, FR, RL, RR order",
+        )
+        self.assertIn(
+            "new SwerveDriveKinematics(kModuleTranslations)", constants_src
+        )
+        labels = re.findall(r'kSimModuleLabels = \{([^}]*)\}', self.drive_src)
+        self.assertEqual(1, len(labels), "module labels must be declared exactly once")
+        self.assertEqual(['"FL"', '"FR"', '"RL"', '"RR"'], re.findall(r'"\w+"', labels[0]))
+
+    def test_commanded_but_unapplied_sysid_voltage_is_reported_not_silently_logged(self):
+        # REVLib's SparkSim forces the applied output to 0 while the Driver Station is disabled,
+        # and dashboard-launched SysId commands keep running while disabled.
+        self.assertIn("Driver Station is enabled", self.drive_src)
+        warn = self.drive_src[self.drive_src.index("private void reportSimSysIdStall()") :]
+        warn = warn[: warn.index("\n  }\n")]
+        self.assertIn("DriverStation.reportWarning(", warn)
+        self.assertIn("getSteerAppliedVolts()", warn)
+        self.assertIn("getDriveAppliedVolts()", warn)
+        self.assertIn("m_warnedSysIdStalledInSim = true;", warn)
+
+    def test_steer_sysid_commands_own_the_drivetrain_from_the_first_instant(self):
+        self.assertEqual(
+            2,
+            self.drive_src.count("Commands.runOnce(this::clearHeadingHoldForSysId, this)"),
+            "both steer SysId entry points must require the drivetrain",
+        )
+        self.assertNotIn(
+            "Commands.runOnce(this::clearHeadingHoldForSysId)\n", self.drive_src
+        )
+
+    def test_flat_zero_steer_velocity_trace_degenerates_the_sysid_fit(self):
+        """SysId's OLS fit runs on the logged VELOCITY trace. SparkAbsoluteEncoderSim.iterate()
+        only integrates position and never publishes velocity, so an azimuth encoder whose velocity
+        is not written from the plant logs a flat zero and the fit collapses - which presents to the
+        user as 'the steer test does nothing'."""
+        gear_ratio = 9424.0 / 203.0
+        rot_per_rad = 1.0 / (2.0 * math.pi)
+        logs, kv_expected, ka_expected = simulate_rotational_plant(
+            NEO_550,
+            inertia_j=0.004,
+            gear_ratio=gear_ratio,
+            ramp_rate=1.0,
+            step_volts=6.0,
+            duration_s=5.0,
+            output_scale_from_rad=rot_per_rad,
+        )
+
+        ks, kv, ka = fit_zoh_sysid(logs)
+        self.assertAlmostEqual(0.0, ks, delta=1e-6)
+        self.assertAlmostEqual(kv_expected / rot_per_rad, kv, delta=kv * 1e-4)
+        self.assertAlmostEqual(ka_expected / rot_per_rad, ka, delta=ka * 1e-4)
+
+        velocity_never_published = [
+            [(volts, position, 0.0) for (volts, position, _) in run] for run in logs
+        ]
+        with self.assertRaises(ValueError):
+            fit_zoh_sysid(velocity_never_published)
+
+        # The published steer encoder velocity is the plant's mechanism rate, in rad/s.
+        self.assertIn(
+            "m_turningEncoderSim.setVelocity(moduleTurnRateRadPerSec);", self.module_src
+        )
+        self.assertIn(
+            "return m_turningEncoder.getVelocity();",
+            self.module_src[self.module_src.index("getSteerVelocityRadiansPerSecond()") :],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
