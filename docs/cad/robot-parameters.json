@@ -1,0 +1,533 @@
+{
+  "$comment": "Single source of truth for the 9751 CAD prompt pack. Units are millimetres unless noted. confidence: 'code' = read directly from robot code (trust it), 'derived' = computed from code values or vendor data, 'estimate' = a guess that exists in code/sim only, 'unknown' = not in the code, must be measured (see measurements.csv).",
+  "meta": {
+    "team_number": 9751,
+    "team_name": "Gemini",
+    "season": 2026,
+    "game": "REBUILT presented by Haas",
+    "source_repo": "Geminiterminal/simulation",
+    "source_commit": "a1ec724",
+    "generated": "2026-10-24",
+    "robot_name": "2026 competition robot (unnamed in code)",
+    "frame": {
+      "origin": "centre of rotation = midpoint of the four wheel centres, projected onto the floor plane (z = 0)",
+      "x_positive": "toward the intake face (front of the robot)",
+      "y_positive": "toward the robot's left side",
+      "z_positive": "up",
+      "yaw_positive": "counter-clockwise seen from above (WPILib convention)"
+    }
+  },
+  "drivetrain": {
+    "type": "swerve, 4 x REV 3in MAXSwerve (REV-21-3005)",
+    "wheelbase_x": {
+      "value": 533.4,
+      "confidence": "code",
+      "source": "Constants.java:38 kWheelBase = 21 in"
+    },
+    "track_width_y": {
+      "value": 673.1,
+      "confidence": "code",
+      "source": "Constants.java:36 kTrackWidth = 26.5 in"
+    },
+    "module_centers": {
+      "value": [
+        [
+          266.7,
+          336.55
+        ],
+        [
+          266.7,
+          -336.55
+        ],
+        [
+          -266.7,
+          336.55
+        ],
+        [
+          -266.7,
+          -336.55
+        ]
+      ],
+      "order": [
+        "front-left",
+        "front-right",
+        "rear-left",
+        "rear-right"
+      ],
+      "confidence": "derived",
+      "source": "Constants.java:41-44 SwerveDriveKinematics order"
+    },
+    "module_body_footprint": {
+      "value": 100.5,
+      "confidence": "derived",
+      "source": "REV REV-21-3005 spec: 3.96 in without mounting tabs"
+    },
+    "module_footprint_with_tabs": {
+      "value": 133.1,
+      "confidence": "derived",
+      "source": "REV REV-21-3005 spec: 5.24 in with mounting tabs"
+    },
+    "module_height_with_neo": {
+      "value": 171.5,
+      "confidence": "derived",
+      "source": "REV REV-21-3005 spec: 6.75 in"
+    },
+    "module_mass": {
+      "value": 1.72,
+      "unit": "kg",
+      "confidence": "derived",
+      "source": "REV: 1720 g each"
+    },
+    "wheel_diameter": {
+      "value": 76.2,
+      "confidence": "code",
+      "source": "Constants.java:77 kWheelDiameterMeters"
+    },
+    "wheel_width": {
+      "value": 22.2,
+      "confidence": "derived",
+      "source": "REV 3in MAXSwerve aluminium wheel, 7/8 in wide"
+    },
+    "wheel_radius": {
+      "value": 38.1,
+      "confidence": "code",
+      "source": "derived from Constants.java:77"
+    },
+    "drive_motor": {
+      "value": "REV NEO 1.1 + SPARK MAX, 13T pinion",
+      "confidence": "code",
+      "source": "Constants.java:73, Configs.java"
+    },
+    "drive_reduction": {
+      "value": 5.0769,
+      "confidence": "code",
+      "source": "(45*22)/(13*15), Constants.java:81"
+    },
+    "steer_motor": {
+      "value": "REV NEO 550 + SPARK MAX",
+      "confidence": "code",
+      "source": "MAXSwerveModule.java:60"
+    },
+    "steer_reduction": {
+      "value": 46.4236,
+      "confidence": "code",
+      "source": "9424:203, SimConstants.java:214"
+    },
+    "free_speed": {
+      "value": 4.46,
+      "unit": "m/s",
+      "confidence": "derived",
+      "source": "5676 rpm / 5.0769 x 0.2394 m"
+    },
+    "max_command_speed": {
+      "value": 4.2,
+      "unit": "m/s",
+      "confidence": "code",
+      "source": "pathplanner/settings.json maxDriveSpeed"
+    },
+    "wheel_cof": {
+      "value": 1.2,
+      "confidence": "code",
+      "source": "pathplanner/settings.json"
+    },
+    "can_ids": {
+      "drive": {
+        "front_left": 17,
+        "front_right": 13,
+        "rear_left": 15,
+        "rear_right": 11
+      },
+      "steer": {
+        "front_left": 16,
+        "front_right": 12,
+        "rear_left": 14,
+        "rear_right": 10
+      },
+      "confidence": "code",
+      "source": "Constants.java:53-63"
+    }
+  },
+  "frame_and_body": {
+    "frame_length_x": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "measure. Minimum that hugs the module bodies = 633.9"
+    },
+    "frame_width_y": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "measure. Minimum that hugs the module bodies = 773.6"
+    },
+    "frame_height": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "ground_clearance": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "bumper_envelope_l_x_w": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "pathplanner_stated_length_x": {
+      "value": 902.0,
+      "confidence": "estimate",
+      "source": "pathplanner/settings.json robotLength",
+      "warning": "not physically consistent with the 110 in perimeter rule - see ROBOT_CAD_PROMPT.md section 4"
+    },
+    "pathplanner_stated_width_y": {
+      "value": 876.0,
+      "confidence": "estimate",
+      "source": "pathplanner/settings.json robotWidth",
+      "warning": "not physically consistent with the 110 in perimeter rule - see ROBOT_CAD_PROMPT.md section 4"
+    },
+    "minimum_frame_from_module_bodies": {
+      "value": {
+        "x": 633.9,
+        "y": 773.6,
+        "perimeter": 2815.0,
+        "perimeter_chamfered_12mm": 2786.88,
+        "perimeter_mm": 2815.0
+      },
+      "confidence": "derived"
+    },
+    "maximum_legal_frame_perimeter_2026": {
+      "value": 2794.0,
+      "confidence": "code",
+      "source": "2026 Game Manual R104: 110 in"
+    },
+    "bumper_envelope_from_min_frame": {
+      "value": {
+        "x": 762.9,
+        "y": 902.6
+      },
+      "confidence": "derived",
+      "note": "min frame + 2 x 64.5 (57.15 padding + 6.35 backing + 1.0 cover)"
+    }
+  },
+  "mass_properties": {
+    "mass": {
+      "value": 65.0,
+      "unit": "kg",
+      "confidence": "estimate",
+      "source": "Constants.java:204 / settings.json robotMass",
+      "warning": "65 kg = 143.3 lb; 2026 limits are 115 lb (R103, no bumpers) and 135 lb (R408, with bumpers). Weigh the robot."
+    },
+    "yaw_moi": {
+      "value": 5.7,
+      "unit": "kg*m^2",
+      "confidence": "estimate",
+      "source": "Constants.java:205"
+    },
+    "cg_height": {
+      "value": null,
+      "confidence": "unknown"
+    }
+  },
+  "vision": {
+    "camera_a": {
+      "name": "FrontCamera",
+      "role": "rear-facing, on top right of the shooter, line of sight parallel to the shot",
+      "x": {
+        "value": -311.15,
+        "confidence": "code",
+        "source": "Constants.java:150 (12.25 in)"
+      },
+      "y": {
+        "value": -273.05,
+        "confidence": "code",
+        "source": "Constants.java:151 (10.75 in)"
+      },
+      "z": {
+        "value": 434.98,
+        "confidence": "code",
+        "source": "Constants.java:152 (17.125 in)"
+      },
+      "roll_deg": 0.0,
+      "pitch_deg": 0.0,
+      "yaw_deg": 180.0,
+      "confidence": "code"
+    },
+    "camera_b": {
+      "name": "GoodCamera_OldLeft",
+      "role": "side-facing; code comment says 'left', transform points to -Y which is the robot's RIGHT",
+      "x": {
+        "value": -254.0,
+        "confidence": "code",
+        "source": "Constants.java:163 (10 in)"
+      },
+      "y": {
+        "value": -330.2,
+        "confidence": "code",
+        "source": "Constants.java:164 (13 in)"
+      },
+      "z": {
+        "value": 411.23,
+        "confidence": "code",
+        "source": "Constants.java:165 (16.19 in)"
+      },
+      "roll_deg": 0.0,
+      "pitch_deg": 0.0,
+      "yaw_deg": -90.0,
+      "confidence": "code"
+    },
+    "camera_module": {
+      "value": "PhotonVision, 1280x720, 75 deg diagonal FOV",
+      "confidence": "code",
+      "source": "Constants.java VisionConstants"
+    },
+    "pcb_size": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "typical OV9281-class board is 36 x 36 mm with 4 x M2.5 on 28 mm centres - verify your unit"
+    }
+  },
+  "shooter": {
+    "architecture": "fixed, opposed dual flywheel; no turret, no hood. Aiming is done by rotating the whole drivetrain; range comes only from wheel speed.",
+    "face": "-X (rear). getAngleToHub() returns the bearing to the hub minus 180 deg, so the -X face points at the hub.",
+    "flywheel_diameter": {
+      "value": 101.6,
+      "confidence": "estimate",
+      "source": "Constants.java:233 comment '4 in wheel'",
+      "note": "verify by measurement"
+    },
+    "flywheel_ratio": {
+      "value": 1.0,
+      "confidence": "code",
+      "source": "Constants.java:232"
+    },
+    "flywheel_speeds_rpm": {
+      "front": 1500.0,
+      "back": 2000.0,
+      "confidence": "code",
+      "source": "Shooter.java:78-79"
+    },
+    "flywheel_surface_speed": {
+      "front": 7.98,
+      "back": 10.64,
+      "unit": "m/s",
+      "confidence": "derived"
+    },
+    "spin_ratio_back_to_front": {
+      "value": 0.75,
+      "confidence": "derived"
+    },
+    "motors": {
+      "flywheel": "2 x REV NEO + SPARK MAX, CAN 5 (front) / 6 (back), 60 A, coast",
+      "confidence": "code",
+      "source": "Shooter.java"
+    },
+    "feeder": {
+      "motor": "CTRE Kraken X60 / TalonFX, CAN 7, brake",
+      "target_rpm": 4500.0,
+      "drum_diameter": null,
+      "confidence": "code"
+    },
+    "axle_pitch": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "centre distance between the two flywheel axles. Geometry: pitch = 101.6 + (150.11 - 2 x compression)"
+    },
+    "launch_angle_deg_from_horizontal": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "muzzle_offset": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "confidence": "unknown",
+      "note": "centre of the shooter exit; PR #18 adds ShooterConstants.kMuzzleOffsetMeters for exactly this"
+    },
+    "side_plate_outline": {
+      "value": null,
+      "confidence": "unknown"
+    }
+  },
+  "indexer": {
+    "conveyor_motor": {
+      "value": "REV NEO + SPARK MAX, CAN 19, brake, 40 A",
+      "confidence": "code"
+    },
+    "conveyor_target_rpm": {
+      "value": 4500.0,
+      "confidence": "code",
+      "source": "Intake.java:66"
+    },
+    "conveyor_drum_diameter": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "conveyor_length": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "conveyor_width": {
+      "value": null,
+      "confidence": "unknown"
+    }
+  },
+  "intake": {
+    "architecture": "single-jointed deploy arm carrying a driven roller; conveyor carries FUEL up into the shooter",
+    "deploy_motor": {
+      "value": "REV NEO Vortex + SPARK Flex, CAN 9, brake, 40 A",
+      "confidence": "code",
+      "source": "Intake.java:122-127"
+    },
+    "total_reduction": {
+      "value": 212.4,
+      "confidence": "derived",
+      "source": "59 motor rev = 100 deg, Constants.java:252"
+    },
+    "arm_length": {
+      "value": 300.0,
+      "confidence": "estimate",
+      "source": "Constants.java:253",
+      "note": "measure pivot to roller centre"
+    },
+    "arm_mass": {
+      "value": 3.0,
+      "unit": "kg",
+      "confidence": "estimate",
+      "source": "Constants.java:254"
+    },
+    "stowed_angle_deg": 0.0,
+    "deployed_angle_deg": 100.0,
+    "max_angle_deg": 105.0,
+    "pivot_position": {
+      "x": null,
+      "y": null,
+      "z": null,
+      "confidence": "unknown"
+    },
+    "roller_motor": {
+      "value": "CTRE Kraken X60 / TalonFX, CAN 1, coast",
+      "confidence": "code",
+      "source": "Intake.java:123"
+    },
+    "roller_target_rpm": {
+      "value": 5600.0,
+      "confidence": "code",
+      "source": "Intake.java:73"
+    },
+    "roller_diameter": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "roller_length": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "intake_width": {
+      "value": null,
+      "confidence": "unknown"
+    }
+  },
+  "climber": {
+    "status": "present in the code base but entirely commented out (Climber.java, AutoClimb.java). Motor CAN 35, soft travel limit 57.426 motor rotations, +/-0.5 duty.",
+    "arm_length": {
+      "value": null,
+      "confidence": "unknown"
+    },
+    "note": "model it only if the mechanism is still on the robot"
+  },
+  "electronics": {
+    "gyro": {
+      "value": "navX MXP, flat and upright, no yaw rotation (kGyroReversed = false)",
+      "confidence": "code"
+    },
+    "battery": {
+      "value": "FRC 12 V 18 Ah SLA, typically 197 x 77 x 167 mm, ~5.9 kg",
+      "confidence": "estimate"
+    },
+    "layout": {
+      "value": null,
+      "confidence": "unknown",
+      "note": "roboRIO, PDH, radio, SPARK MAX/Flex locations are not in the code"
+    }
+  },
+  "game": {
+    "fuel_diameter": {
+      "value": 150.11,
+      "confidence": "derived",
+      "source": "2026 Game Manual 5.10.1: 5.91 in"
+    },
+    "fuel_mass": {
+      "value": 0.203,
+      "unit": "kg",
+      "confidence": "derived",
+      "source": "AndyMark am-5801: 0.448-0.5 lb"
+    },
+    "field": {
+      "length_x": 16540.0,
+      "width_y": 8070.0,
+      "confidence": "code",
+      "source": "Constants.java:121-124"
+    },
+    "blue_hub": {
+      "x": 4626.0,
+      "y": 4035.0,
+      "confidence": "code",
+      "source": "Constants.java:127-128"
+    },
+    "red_hub": {
+      "x": 11919.0,
+      "y": 4029.0,
+      "confidence": "code",
+      "source": "Constants.java:131-132"
+    },
+    "default_shooting_distance": {
+      "value": 2540.0,
+      "confidence": "code",
+      "source": "AutoAimAndShoot.java AUTO_AIM_DEFAULT_DISTANCE_IN = 100 in"
+    }
+  },
+  "rules_2026": {
+    "source": "2026 FRC Game Manual section 8 (verify the current revision before you cut metal)",
+    "R103_max_robot_mass": {
+      "value": 52.16,
+      "unit": "kg",
+      "note": "115 lb, excluding bumpers and battery"
+    },
+    "R408_max_mass_with_bumpers": {
+      "value": 61.23,
+      "unit": "kg",
+      "note": "135 lb"
+    },
+    "I103_max_inspected_mass": {
+      "value": 68.04,
+      "unit": "kg",
+      "note": "150 lb including swappable mechanisms"
+    },
+    "R104_max_frame_perimeter": {
+      "value": 2794.0,
+      "note": "110 in, starting configuration"
+    },
+    "R104_max_starting_height": {
+      "value": 762.0,
+      "note": "30 in"
+    },
+    "R403_max_bumper_extension": {
+      "value": 101.6,
+      "note": "4.0 in from the frame perimeter"
+    },
+    "R404_max_hard_part_extension": {
+      "value": 31.75,
+      "note": "1.25 in; padding must extend >= 2.0 in past hard parts"
+    },
+    "R402_min_padding_depth": {
+      "value": 57.15,
+      "note": "2.25 in"
+    },
+    "R402_min_padding_height": {
+      "value": 114.3,
+      "note": "4.5 in"
+    },
+    "R405_bumper_vertical_band": {
+      "min": 69.85,
+      "max": 139.7,
+      "note": "2.75 in to 5.5 in above the floor"
+    }
+  }
+}

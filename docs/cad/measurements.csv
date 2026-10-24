@@ -1,0 +1,46 @@
+id,subsystem,what_to_measure,unit,code_or_vendor_value,confidence,where_it_comes_from,measured_value,measured_by,date,notes
+M01,drivetrain,Overall frame length outer face to outer face,mm,,not in code,,me,,,"Compare with the 633.9 minimum implied by the module bodies"
+M02,drivetrain,Overall frame width outer face to outer face,mm,,not in code,,me,,,"Compare with the 773.6 minimum"
+M03,drivetrain,Frame perimeter (wrap a string, exclude bumpers),mm,,not in code,,me,,"R104 limit 2794 (110 in); the module geometry alone implies 2815 before chamfers"
+M04,drivetrain,Frame tube cross section(s) and wall thickness,mm,,not in code,,me,,,"1x2 in MAXTube assumed in prompt 4.1"
+M05,drivetrain,Frame height floor to top of top tube,mm,,not in code,,me,,,"Master prompt uses 300 as a placeholder"
+M06,drivetrain,Ground clearance under the belly pan,mm,,not in code,,me,,
+M07,drivetrain,Wheelbase centre to centre (verify),mm,533.4,code,Constants.java:38,,me,,"21 in; already in code, just verify"
+M08,drivetrain,Track width centre to centre (verify),mm,673.1,code,Constants.java:36,,me,,"26.5 in; already in code, just verify"
+M09,bumpers,Bumper overall length x width x height,mm,,not in code,,me,,
+M10,bumpers,Padding depth (robot side to cover),mm,57.15 minimum,rule,2026 manual R402-A,,me,,"Rule floor, measure the real bumper"
+M11,bumpers,Bumper vertical band above the floor,mm,69.85 to 139.7,rule,2026 manual R405,,me,,"Bumpers must fill that band"
+M12,bumpers,Total bumper extension beyond the frame,mm,101.6 maximum,rule,2026 manual R403,,me,,
+M13,shooter,Flywheel diameter (front and back),mm,101.6,estimate,Constants.java:233 comment,,me,,"Comment says 4 in wheel; verify both"
+M14,shooter,Flywheel width,mm,,not in code,,me,,"Prompt 4.4 assumes 25.4"
+M15,shooter,Axle centre distance (the one that matters),mm,,not in code,,me,,"PITCH = 101.6 + 150.11 - 2 x compression; ~213.6 at 19.05 compression"
+M16,shooter,Ball compression between the wheels,mm,,tuning choice,,me,,"Sets exit speed; typical 12.7 to 25.4"
+M17,shooter,Side plate outline length x height and thickness,mm,,not in code,,me,,,
+M18,shooter,Muzzle centre relative to robot origin (x y z),mm,,not in code,,me,,"Feeds ShooterConstants.kMuzzleOffsetMeters in PR #18"
+M19,shooter,Ball exit angle above horizontal,deg,,not in code,,me,,
+M20,shooter,Feeder drum diameter and length,mm,,not in code,,me,,"Prompt 4.5 assumes 50.8 x 150"
+M21,shooter,Feeder drum centre height above the ball path,mm,,not in code,,me,,
+M22,intake,Deploy pivot position x y z,mm,,not in code,,me,,
+M23,intake,Pivot to roller centre distance,mm,300,estimate,Constants.java:253,,me,,"Sim uses 300 mm and 3 kg for arm inertia"
+M24,intake,Intake width (roller length),mm,,not in code,,me,,"Prompt 4.7 assumes 660"
+M25,intake,Roller diameter,mm,,not in code,,me,,"Prompt 4.7 assumes 25.4; code drives it to 5600 rpm"
+M26,intake,Deploy arm mass,kg,3.0,estimate,Constants.java:254,,me,,
+M27,intake,Stowed and deployed arm angles,deg,0 to 100,code,Constants.java:256-257,,me,,"Hard limit 105"
+M28,indexer,Conveyor length x width,mm,,not in code,,me,,"Prompt 4.8 assumes 420 x 190"
+M29,indexer,Conveyor drum diameter,mm,,not in code,,me,,,
+M30,indexer,Conveyor floor height above the mat,mm,,not in code,,me,,
+M31,electronics,roboRIO position,mm,,not in code,,me,,
+M32,electronics,PDH position,mm,,not in code,,me,,
+M33,electronics,Radio position,mm,,not in code,,me,,
+M34,electronics,Battery position and orientation,mm,,not in code,,me,,"Standard FRC SLA is ~197 x 77 x 167, ~5.9 kg"
+M35,electronics,navX position and orientation,mm,,not in code,,me,,"Must be flat, no yaw offset (kGyroReversed = false)"
+M36,vision,Camera A lens centre x y z and yaw and pitch,mm,-311.15 -273.05 434.98 / 180 / 0,code,Constants.java:150-157,,me,,"Re-measure after any remount"
+M37,vision,Camera B lens centre x y z and yaw and pitch,mm,-254.00 -330.20 411.23 / -90 / 0,code,Constants.java:163-170,,me,,"Faces the robot RIGHT despite the name"
+M38,mass,All-up robot mass without bumpers and battery,kg,65.0 in code,estimate,Constants.java:204,,me,,"R103 limit 52.16 kg (115 lb). 65 kg is 8 lb over - weigh it"
+M39,mass,All-up mass with bumpers,kg,,rule 61.23 max,R408,,me,,
+M40,mass,Mass of each subassembly (drivetrain shooter intake electronics),kg,,not in code,,me,,
+M41,mass,CG height above the floor,mm,,not in code,,me,,"Balance on a pipe or use CAD mass properties"
+M42,mass,CG x y position,mm,,not in code,,me,,
+M43,mass,Yaw moment of inertia (from CAD mass properties),kg m^2,5.7 in code,estimate,Constants.java:205,,me,,"Take from CAD once the model is closed"
+M44,cots,COTS part numbers for every vendor component,-,,not in code,,me,,"Decides which STEP files to download"
+M45,cots,Which SPARK / Talon holds CAN 9 (the deploy motor),-,"SPARK Flex assumed",estimate,Intake.java:122,,me,,"Code comment warns it may physically be a SPARK MAX"
