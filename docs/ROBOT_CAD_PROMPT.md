@@ -15,6 +15,10 @@ Two things up front, because they decide how you should use this pack:
    Section 6 is a 15-group tape-measure sheet that closes that gap — do it first, or the CAD will be
    fiction.
 
+> **No access to the robot to measure it?** Read
+> [`CAD_REFERENCE_ROBOT.md`](CAD_REFERENCE_ROBOT.md) first: it gives a published reference robot to adapt,
+> and a reference value for every dimension that was previously "must measure".
+>
 > **Want a whole-robot packaging model with less work?** Use
 > [`CAD_MECHANISM_PROMPTS.md`](CAD_MECHANISM_PROMPTS.md) instead: eight self-contained prompts, one per
 > mechanism, each placed in the robot by a stated transform. Use this document when you are ready to
@@ -137,7 +141,9 @@ is fine — its job is to lock the layout; you then replace each placeholder wit
 
 Each prompt is standalone: paste the context block (section 1), then the prompt. Replace every
 `«MEASURE»` from `measurements.csv` before generating — a placeholder left in a prompt gets a
-confident, wrong number.
+confident, wrong number. If you cannot measure the robot, use the `reference_value` column of
+`measurements.csv` (sourced from published robots; see [`CAD_REFERENCE_ROBOT.md`](CAD_REFERENCE_ROBOT.md))
+and record that the model is **design intent**, not as-built.
 
 ---
 
@@ -179,7 +185,8 @@ Three fused slabs:
   the backing plate.
 - Cover: 1.0 thick in Y over the outer face (y 63.5..64.5), wrapping 25 mm onto the top and bottom
   faces.
-Set H_BACK = «MEASURE_bumper_height» and H_PAD = «MEASURE_padding_height».
+Set H_BACK = 127.0 (5 in, as the 2026 Everybot builds its bumper core - tall enough to cover
+the whole 69.85-139.7 band on its own) and H_PAD = 114.3 (4.5 in, centred on the core).
 Mitre both ends at 45 deg so four segments form a rectangle. No fillets.
 Label faces INNER, TOP, OUTER.
 ```
@@ -298,7 +305,7 @@ MAXMotion tuning stops matching.
 
 ```
 Generate one FRC intake roller, millimetres, single body.
-- Core Ø25.4 x «MEASURE_intake_width» long (nominal 500), 6061.
+- Core Ø25.4 x 468 long (18-7/16 in, the REV 2026 Starter Bot intake shaft length), 6061.
 - 8 silicone paddle strips, 25 wide, 6 tall, full length, evenly spaced, R2 on the leading edge.
 - Ø12.75 through bore.
 - 2 x Ø6.5 cross holes 30 mm from each end, 90 deg apart, for roll pins.

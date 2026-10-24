@@ -21,9 +21,15 @@ part-level prompts then refine the pieces you actually cut.
 
 ## 0. Workflow
 
-1. **Measure first** (`docs/cad/measurements.csv`, 45 rows, ~45 min). The prompts below are
-   self-contained but they carry *nominal* numbers where the robot code has none — frame height,
-   intake width, shooter envelope, electronics layout.
+1. **Fill the numbers** (`docs/cad/measurements.csv`, 45 rows). Two ways:
+   - You have the robot: 45 minutes with a tape, fill the `measured_value` column.
+   - You do not: fill from the `reference_value` column, which comes from published robots with the same
+     drivetrain and archetype (see [`CAD_REFERENCE_ROBOT.md`](CAD_REFERENCE_ROBOT.md)), and label the
+     model **design intent**.
+
+   Even better, if you cannot measure: **[`CAD_REFERENCE_ROBOT.md`](CAD_REFERENCE_ROBOT.md) §2** adapts a
+   complete published CAD instead of generating eight mechanisms. Only use the prompts below if you
+   want our own architecture rather than the reference robot's.
 2. **Keep one layout file.** Section 1 is the nominal layout; edit it with your measurements before
    you generate anything. Every prompt repeats those numbers, so if the layout changes you re-paste.
 3. **Generate one mechanism per prompt.** Don't ask for two mechanisms in one prompt.

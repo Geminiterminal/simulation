@@ -268,7 +268,7 @@ The physics constants below are only as good as the measured robot. Two prompt p
 into CAD: [`docs/CAD_MECHANISM_PROMPTS.md`](docs/CAD_MECHANISM_PROMPTS.md) has eight self-contained
 text-to-CAD prompts, one per mechanism, each carrying its own context and the transform that places it
 in the robot (assemble those for a packaging model); [`docs/ROBOT_CAD_PROMPT.md`](docs/ROBOT_CAD_PROMPT.md)
-has the per-part prompts for the pieces that actually get cut. The datum drawing
+has the per-part prompts for the pieces that actually get cut. If the robot is not accessible for measurement, [`docs/CAD_REFERENCE_ROBOT.md`](docs/CAD_REFERENCE_ROBOT.md) gives a published reference robot to adapt and a reference value for every otherwise-unmeasurable dimension. The datum drawing
 ([`docs/cad/robot-datums.png`](docs/cad/robot-datums.png)), the nominal mechanism layout
 ([`docs/cad/robot-parameters.json`](docs/cad/robot-parameters.json)) and the tape-measure sheet
 ([`docs/cad/measurements.csv`](docs/cad/measurements.csv)) turn the values in this table from estimates
