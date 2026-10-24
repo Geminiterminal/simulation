@@ -57,6 +57,7 @@ import frc.robot.Constants.ShooterConstants;
 import frc.robot.Constants.SimulationConstants;
 import frc.robot.Constants.VisionConstants;
 import frc.robot.ShotMath;
+import frc.robot.ShooterCameraAim;
 import frc.robot.ShooterTuning;
 import frc.robot.driverprofiles.ThrustmasterProfile;
 
@@ -77,6 +78,9 @@ import org.photonvision.PhotonCamera;
 import org.photonvision.PhotonPoseEstimator;
 import org.photonvision.PhotonPoseEstimator.PoseStrategy;
 import org.photonvision.targeting.PhotonPipelineResult;
+import org.photonvision.targeting.PhotonTrackedTarget;
+
+import edu.wpi.first.apriltag.AprilTagFieldLayout;
 
 public class DriveSubsystem extends SubsystemBase {
   private static final String PATHPLANNER_COMMANDED_OMEGA_KEY =
@@ -217,6 +221,13 @@ public class DriveSubsystem extends SubsystemBase {
   // below. The manual "force reseed" button re-solves from these instead of
   // draining a camera's frame queue a second time in the same loop.
   private final Map<String, PhotonPipelineResult> m_latestFrameByCamera = new HashMap<>();
+
+  // AprilTag layout, shared with the pose estimators. Used by the shooter
+  // camera aim correction to compare a detection against the known tag pose.
+  private final AprilTagFieldLayout m_tagLayout;
+
+  /** Newest shooter-camera aim correction; recomputed once per loop in periodic(). */
+  private ShooterCameraAim.Correction m_shooterCameraAim = ShooterCameraAim.NONE;
 
   /** Number of vision solutions rejected by the per-component outlier gates. */
   private int m_visionOutliersRejected = 0;
@@ -465,12 +476,13 @@ public class DriveSubsystem extends SubsystemBase {
     // PhotonVision 2026: the strategy-taking constructor and update() are
     // deprecated for removal; the estimation method called per frame selects
     // the strategy (see solveCameraPose).
+    m_tagLayout = visionSystem.getTagLayout();
     m_backCameraEstimator = new PhotonPoseEstimator(
-      visionSystem.getTagLayout(),
+      m_tagLayout,
       m_robotToBackCamera
     );
     m_sideCameraEstimator = new PhotonPoseEstimator(
-      visionSystem.getTagLayout(),
+      m_tagLayout,
       m_robotToSideCamera
     );
 
@@ -617,6 +629,11 @@ public class DriveSubsystem extends SubsystemBase {
   
     // 2. Inject any new PhotonVision measurements
     addPhotonVisionMeasurement();
+
+    // 2b. Turn the newest shooter-camera frame into an aim residual. Cheap
+    // (a handful of tags), so it runs every loop even when the shooter is idle;
+    // that keeps the dashboard diagnostic live while tuning.
+    updateShooterCameraAim();
   
     // 3. Update pose indicator for debugging
     double now = Timer.getFPGATimestamp();
@@ -1109,14 +1126,111 @@ public class DriveSubsystem extends SubsystemBase {
    * offsets left at zero this reduces exactly to the old
    * {@code atan2(dy, dx) - 180} formula.
    */
+  /**
+   * Newest shooter-camera aim correction.
+   *
+   * <p>This is a <em>residual</em>: the difference between where the camera
+   * actually sees an AprilTag and where the fused pose says it should be. It is
+   * not a second pose; it is the number the shooter should add to its own aim
+   * error and distance. {@link ShooterCameraAim} documents the sign convention.
+   *
+   * @return the last computed correction; {@link ShooterCameraAim#NONE} when the
+   *     camera has not produced a frame with a target
+   */
+  public ShooterCameraAim.Correction getShooterCameraAim() {
+    return m_shooterCameraAim;
+  }
+
+  /** Recomputes and publishes the shooter-camera aim residual. */
+  private void updateShooterCameraAim() {
+    m_shooterCameraAim = computeShooterCameraAim();
+
+    ShooterCameraAim.Correction correction = m_shooterCameraAim;
+    SmartDashboard.putBoolean("Vision/ShooterCam Aim Valid", correction.valid());
+    SmartDashboard.putString("Vision/ShooterCam Status", correction.reason());
+    SmartDashboard.putNumber("Vision/ShooterCam Aim Error (deg)", correction.aimErrorDeg());
+    SmartDashboard.putNumber("Vision/ShooterCam Range Error (m)", correction.rangeErrorMeters());
+    SmartDashboard.putNumber("Vision/ShooterCam Frame Age (s)", correction.ageSeconds());
+    SmartDashboard.putNumber("Vision/ShooterCam Tags Used", correction.acceptedTargets());
+  }
+
+  /**
+   * Builds {@link ShooterCameraAim.Target}s from the newest frame and evaluates
+   * them against the fused pose. The frame is never drained here: it was cached
+   * by the once-per-loop camera intake, so the fusion path still sees it.
+   */
+  private ShooterCameraAim.Correction computeShooterCameraAim() {
+    PhotonPipelineResult result = m_latestFrameByCamera.get(VisionConstants.kShooterCameraName);
+    if (result == null || !result.hasTargets() || m_tagLayout == null) {
+      return ShooterCameraAim.NONE;
+    }
+
+    List<ShooterCameraAim.Target> targets = new ArrayList<>();
+    for (PhotonTrackedTarget target : result.getTargets()) {
+      Optional<Pose3d> tagPose = m_tagLayout.getTagPose(target.getFiducialId());
+      if (tagPose.isEmpty()) {
+        continue;
+      }
+      Transform3d cameraToTag = target.getBestCameraToTarget();
+      targets.add(new ShooterCameraAim.Target(
+          target.getFiducialId(),
+          cameraToTag.getX(),
+          cameraToTag.getY(),
+          target.getPoseAmbiguity(),
+          tagPose.get().getX(),
+          tagPose.get().getY()));
+    }
+
+    Transform3d mount = VisionConstants.kRobotToShooterCamera;
+    ShooterCameraAim.Mount cameraMount = new ShooterCameraAim.Mount(
+        mount.getX(),
+        mount.getY(),
+        mount.getRotation().toRotation2d().getDegrees());
+
+    ShooterCameraAim.Config config = new ShooterCameraAim.Config(
+        ShooterTuning.cameraAimMaxAgeSeconds(),
+        ShooterTuning.cameraAimMaxAmbiguity(),
+        VisionConstants.kCameraAimMinRangeMeters,
+        VisionConstants.kCameraAimMaxRangeMeters,
+        VisionConstants.kCameraAimMaxCorrectionDeg,
+        VisionConstants.kCameraAimMaxRangeCorrectionMeters);
+
+    Pose2d pose = getPose();
+    double age = Timer.getFPGATimestamp() - result.getTimestampSeconds();
+    return ShooterCameraAim.evaluate(
+        targets,
+        pose.getX(),
+        pose.getY(),
+        pose.getRotation().getDegrees(),
+        cameraMount,
+        age,
+        config);
+  }
+
   public ShotMath.AimSolution getAimSolution() {
-      return ShotMath.solveAim(
-          getPose(),
-          getHubLocation(),
-          ShooterConstants.kMuzzleOffsetMeters,
-          ShooterConstants.kShooterFacingOffsetDegrees,
-          ShooterTuning.headingTrimDegrees(),
-          ShotMath.kDefaultIterations);
+      ShotMath.AimSolution base =
+          ShotMath.solveAim(
+              getPose(),
+              getHubLocation(),
+              ShooterConstants.kMuzzleOffsetMeters,
+              ShooterConstants.kShooterFacingOffsetDegrees,
+              ShooterTuning.headingTrimDegrees(),
+              ShotMath.kDefaultIterations);
+
+      // The shooter camera sees the aim error the pose cannot: fold its residual
+      // into the one number everything reads (the drive's aim command, the shot
+      // gate and the muzzle distance), so the robot turns until the tag is
+      // actually centred instead of until the pose thinks it is.
+      if (!ShooterTuning.useShooterCameraAim()) {
+          return base;
+      }
+      ShooterCameraAim.Correction correction = m_shooterCameraAim;
+      if (!correction.valid()) {
+          return base;
+      }
+      return new ShotMath.AimSolution(
+          MathUtil.inputModulus(base.headingDegrees() + correction.aimErrorDeg(), -180.0, 180.0),
+          Math.max(0.0, base.distanceMeters() + correction.rangeErrorMeters()));
   }
 
   /** Calculates the exact field-relative angle the robot needs to face to shoot at the Hub */

@@ -172,15 +172,16 @@ than a one-time spin-up check.
 | File | Change |
 | --- | --- |
 | `ShotMath.java` **(new)** | Pure aim geometry, table interpolation, speed ratio, closing-speed / motion compensation. No hardware. |
-| `ShotGate.java` **(new)** | Shot-readiness state machine: speed band + settle + hysteresis, live aim gate, distance gate, motion gate. No hardware. |
+| `ShotGate.java` **(new)** | Shot-readiness state machine: speed band + settle + hysteresis, live aim gate, distance gate, motion gate, moving-shot distance envelope. No hardware. |
 | `ShotInputs.java` **(new)** | The per-loop measurements the drivetrain hands to the shooter. |
+| `ShooterCameraAim.java` **(new)** | Pure tag-residual math for the camera mounted on the shooter: bearing/range correction, ambiguity/range/staleness/implausible-correction filters. No hardware. |
 | `ShooterTuning.java` **(new)** | Every new knob on the dashboard, defaults neutral, with `publishDefaults()` like `AutoTuning`. |
 | `Shooter.java` | Targets refreshed and pushed every loop; distance table; trims; continuous feed gating; per-shot recovery; status telemetry; `kS` in both motor configs; SysId untouched. |
-| `DriveSubsystem.java` | `getAimSolution()` / `getShotDistanceMeters()` built on `ShotMath`; `getAngleToHub()` delegates (identical at zero offset). |
-| `RobotContainer.java` | Installs the live `ShotInputs` supplier; one `trackHubAndRange()` command that keeps aiming while ranging; distance measured from the muzzle. |
+| `DriveSubsystem.java` | `getAimSolution()` / `getShotDistanceMeters()` built on `ShotMath`; `getAngleToHub()` delegates (identical at zero offset); `getShooterCameraAim()` publishes the newest tag residual from the shooter camera. |
+| `RobotContainer.java` | Installs the live `ShotInputs` supplier; one `trackHubAndRange()` command that keeps aiming while ranging; distance measured from the muzzle; applies the shooter-camera residual to the aim when enabled. |
 | `AutoAimAndShoot.java` | Same policy for autonomous: heading tracked in every phase, table mode skips ranging, muzzle distance. |
 | `Constants.ShooterConstants` | Muzzle offset, facing offset, spin ratio, default table, nominal time of flight. |
-| Tests | `ShotMathTest`, `ShotGateTest`, plus new cases in `ShooterTest`. |
+| Tests | `ShotMathTest`, `ShotGateTest`, `ShooterCameraAimTest`, plus new cases in `ShooterTest`. |
 
 ### The new shot cycle
 
@@ -203,14 +204,18 @@ start()  ->  gate closed, feeder off
 `Speed Tolerance (%)`, `Speed Settle (s)`, `Aim Hysteresis (deg)`,
 `Aim Settle (s)`, `Distance Hysteresis (in)`, `Max Fire Speed (m/s)`,
 `Max Fire Yaw Rate (deg/s)`, `Motion Comp Gain (RPM per m/s)`,
-`Heading Trim (deg)`.
+`Heading Trim (deg)`, `Moving Shot Max Distance (m)`,
+`Moving Shot Threshold (m/s)`, `Use Shooter Camera Aim`,
+`Camera Aim Max Age (s)`, `Camera Aim Max Ambiguity`.
 
 `Shooter Table/` — `1..5 Distance (m)` and `1..5 Front RPM`.
 
 `Shooter/` (read-only) — `Ready To Fire`, `Feed Status`, `Speed Ready`, `Aimed`,
 `At Distance`, `Motion OK`, `Front/Back RPM Error`, `Distance (m)`,
 `Heading Error (deg)`, `Feed Bursts`, `Target Source`, `Table Valid`, `Table RPM`,
-`Motion Comp (RPM)`, `Motion Gain (suggested)`.
+`Motion Comp (RPM)`, `Motion Gain (suggested)`, `Moving Shot Limit (m)`,
+`Camera Aim Enabled`, `Camera Aim Used`, `Camera Aim Status`,
+`Camera Aim Correction (deg)`, `Camera Range Correction (m)`.
 
 ---
 
@@ -289,11 +294,15 @@ Recommended: fill in the table at the distances you actually shoot from
      400 RPM/m table and 0.45 s of flight that is about 180).
    * Raise `Max Fire Speed` to 1.0-1.5 m/s.
    * Verify 3 shots while driving toward the hub and 3 while driving away. If
-     both sets land long, lower the gain; if both land short, raise it.
-   * This is an approximation (it assumes the ball inherits the robot's
-     velocity and the flight time is constant). It gets you most of the benefit
-     without a turret, and it is the single biggest scoring-rate upgrade
-     available from software.
+     shots taken toward the hub land short *and* shots taken away land long,
+     the gain is too high for this robot: the ball is not inheriting the full
+     chassis velocity. Both sets landing long means the table itself is hot -
+     fix §5.3 first.
+   * The suggested value assumes **full** velocity inheritance (f = 1). Measure
+     the real fraction and scale the gain by it (§9.7); the compensation is then
+     a calibration, not a guess.
+   * Keep moving shots inside `Moving Shot Max Distance (m)` until the gain has
+     been measured. §9.5 explains the envelope and why a hood changes it.
 
 ### 5.7 Identified gains with SysId (15 min)
 
@@ -333,7 +342,7 @@ mechanically impossible.
 | --- | --- | --- |
 | Flywheel energy per ball | Two 1:1 NEOs dip a lot per ball; gating recovers accuracy but costs rate | Add inertia (steel disk / brass ring) or a third motor |
 | Ball contact time ~30 ms | Not enough loops to control torque during contact (6328) | More inertia, or torque-mode control with a fast controller |
-| Launch angle is fixed | RPM alone sets range; at one angle some distances are unreachable | Adjustable hood |
+| Launch angle is fixed | RPM alone sets range; at one angle some distances are unreachable, and flight time (which is what limits a moving shot) cannot be shortened | Adjustable hood - §9.5 |
 | No ball presence sensor | The feeder cannot meter one ball at a time; a burst may release 2-3 | Beam break at the shooter entry |
 | Mechanical bias | Trim corrects a constant offset, not a varying one | Re-shim / re-mount the shooter |
 | Wheel durometer, compression | Slip and spin vary with the game piece | Different wheels / compression |
@@ -350,6 +359,8 @@ software above run at full rate instead of waiting for recovery.
   the new gating.
 * `Heading Trim 0`, muzzle offset `(0,0)` = the pre-existing aim math exactly.
 * `Motion Comp Gain 0` = no compensation.
+* `Use Shooter Camera Aim` off (default) = the pose-based aim, byte for byte.
+* `Moving Shot Max Distance 0` (default) = the motion gate as it was.
 * `kS = 0` in both motor configs = the previous feedforward.
 * The shooter only ever feeds when `systemEnabled`; `stopAll()` stops the
   flywheel, feeder, conveyor and shot cycle as before.
@@ -358,6 +369,243 @@ software above run at full rate instead of waiting for recovery.
 * If the robot will not fire and `Shooter/Feed Status` explains why, the driver
   can always hold the alignment override - but the flywheel speed gate still
   applies, deliberately.
+
+
+---
+
+## 9. The camera on the shooter: what it buys, and what a hood would have bought
+
+### 9.1 Which camera it is
+
+`VisionConstants` defines exactly two cameras, and only one of them is on the
+shooter:
+
+| Constant | Name on the network | Mount (robot frame, +x forward / +y left) | Looks |
+| --- | --- | --- | --- |
+| `kBackCameraName` | `FrontCamera` | 12.25 in back, 10.75 in **right**, 17.125 in up | yaw 180 = out of the **rear** |
+| `kSideCameraName` | `GoodCamera_OldLeft` | 10 in back, 13 in right, 16.19 in up | yaw -90 = out of the **right** side |
+
+The names are leftovers from an earlier robot (the "front" camera faces
+backwards, the "left" camera faces right). The rear-facing unit is the one on
+the top right of the shooter, looking out over the muzzle: it is the only one
+whose line of sight is parallel to the shot. Everything below uses
+`VisionConstants.kShooterCameraName`, which currently aliases it, so re-mounting
+either the camera or the shooter only means updating one transform.
+
+To confirm in 20 seconds: open the PhotonVision UI and cover each lens. The
+camera that shows the hub tags while the robot is lined up to shoot is the one
+this section is about.
+
+### 9.2 What it was doing before this change
+
+Nothing that touched the shot. Every accepted frame from either camera did
+exactly one thing:
+
+```
+estimateCoprocMultiTagPose / estimateClosestToReferencePose
+      -> outlier gate vs sampleAt(timestamp)
+      -> innovation limit
+      -> m_poseEstimator.addVisionMeasurement(...)
+```
+
+The aim itself was pure odometry: `getPose()` -> `ShotMath.solveAim()` ->
+`getAngleToHub()`. Raw per-tag geometry (`getYaw`, `getPitch`, target area,
+`getBestCameraToTarget`) was never read. So the camera improved the *inputs* to
+the aim, filtered and delayed through the estimator, and never measured the aim
+itself.
+
+### 9.3 What it can measure that odometry cannot
+
+The camera bolted to the shooter is the only sensor on the robot that measures
+the angle to the target **from the frame the ball leaves from**. That matters
+because the pose-based aim inherits every pose error, and the pose estimator is
+deliberately smoothed:
+
+| Error source | Pose-based aim | Shooter camera residual |
+| --- | --- | --- |
+| Gyro drift / wheel slip after a hit | full error | measured and removed |
+| Fusion lag while turning (45 deg/s, ~100 ms) | ~4.5 deg | ~1.8 deg at 40 ms frame age |
+| Unmeasured muzzle offset (`kMuzzleOffsetMeters` is still `(0,0)`) | full error | measured at the camera |
+| Multi-tag solve needs 2+ tags to be accurate | fails with 1 tag | works with 1 tag |
+| Ball inherits robot velocity, wheel slip, launch angle | invisible | invisible |
+
+The first four are aim errors, and they are the ones that turn a well-tuned
+table into a miss. 2 deg at 4 m is 14 cm; the hub throat does not have 14 cm of
+margin. The last row is not an aim error, and no camera will ever see it - see
+9.5.
+
+### 9.4 What changed in code
+
+`ShooterCameraAim.java` **(new, pure)** turns one frame into a *residual*, not a
+second pose:
+
+1. Project each detection from the camera frame into the field, using the pose
+   the robot is currently driving on and the measured mount transform.
+2. Compare it with the tag's pose from the official field layout.
+3. Report the angular and radial difference, averaged over the acceptable tags
+   in the frame.
+
+That residual is exactly the amount by which the pose-based aim is wrong, so it
+is *added* to the aim heading and the distance instead of replacing them, inside
+`DriveSubsystem.getAimSolution()`. That one change point is deliberate: the
+drive command, the shot gate, the PathPlanner rotation override and the muzzle
+distance all read `getAimSolution()`, so they can never disagree about where the
+robot is pointing. It also closes the loop physically - the drivetrain turns
+until the tag is actually centred, not until the pose thinks it is.
+
+Nothing in the pose estimator is touched, so a bad camera frame can never move
+the robot's pose or the drivetrain's idea of where it is - the worst it can do is
+be rejected.
+
+Filters, all on the dashboard (`Shooter Tuning/`):
+
+| Knob | Default | Rejects |
+| --- | --- | --- |
+| `Use Shooter Camera Aim` | **off** | the whole feature, when off |
+| `Camera Aim Max Age (s)` | 0.08 | frames older than the latency budget |
+| `Camera Aim Max Ambiguity` | 0.35 | single-tag solves too ambiguous to trust |
+| - (`VisionConstants`) | 0.75-7.5 m | tags too close or too far to aim with |
+| - (`VisionConstants`) | 8 deg / 0.75 m | corrections too large to be aim error |
+
+The last row is the safety net: a wrong tag or a broken pose produces a
+correction no physical aim error could produce, and the frame is dropped rather
+than yanking the shot sideways. `Correction.reason()` reports which filter fired
+(`STALE FRAME`, `AMBIGUOUS`, `TOO FAR`, `CORRECTION TOO LARGE`, `NO TARGET`,
+`NO POSE`) on `Vision/ShooterCam Status`.
+
+New read-only keys: `Vision/ShooterCam Aim Valid`, `Vision/ShooterCam Status`,
+`Vision/ShooterCam Aim Error (deg)`, `Vision/ShooterCam Range Error (m)`,
+`Vision/ShooterCam Frame Age (s)`, `Vision/ShooterCam Tags Used`,
+`Shooter/Camera Aim Enabled`, `Shooter/Camera Aim Used`,
+`Shooter/Camera Aim Correction (deg)`, `Shooter/Camera Range Correction (m)`.
+
+**The residual is also a mount diagnostic.** Power the robot up, aim at the hub
+and watch `Vision/ShooterCam Aim Error (deg)`:
+
+* a constant few degrees at every range and heading = the mount yaw in
+  `kRobotToBackCamera` is wrong (or the camera is not parallel to the shot);
+* a residual that grows as the robot gets closer, at roughly `1/range` = the
+  mount X/Y in `kRobotToBackCamera` is wrong;
+* a residual that jumps around per tag = detection noise or vibration - see 9.6.
+
+Either of the first two is worth fixing: the pose estimator is using the same
+transform, so a wrong mount is quietly biasing every vision measurement too.
+
+### 9.5 Shooting on the move without a hood: what is actually possible
+
+Start with the honest mechanics. With a fixed launch angle and a distance->RPM
+table, the launcher has exactly **one** control: wheel speed. Angle, spin and
+ball contact are fixed by the mechanism. A hood adds a second control: it can
+trade launch speed for launch angle at a given range, and the reason that
+matters is **flight time**.
+
+Everything bad about a moving shot scales with flight time:
+
+* the fraction `f` of the chassis velocity the ball carries becomes a lateral
+  miss of `f * v * t_flight` - 1 m/s cross-track over 0.5 s is **50 cm** at
+  `f = 1`, and nothing at all at `f = 0`;
+* the aim error from a stale heading grows as `yaw_rate * latency`, and the
+  heading you commit to has to stay correct for the whole flight;
+* the ball's own deviation from any unmodelled effect (slip, contact, spin)
+  scales with time in the air.
+
+At 4 m with a fixed angle, the flight time is whatever the table produces -
+typically 0.4-0.6 s. A hood does not remove any of those terms either; it lets
+you fire flatter and faster, which shortens the flight time and shrinks all
+three at once.
+That is the real value of a hood, and it is why "no hood" caps the *range* at
+which moving shots are worth taking, not whether they are possible.
+
+There are exactly two things to compensate on a moving shot, and one of them a
+camera can measure:
+
+1. **Aim at release.** `ShotGate` already refuses to fire unless the heading is
+   within tolerance for a settle time. The camera is what makes that tolerance
+   real instead of "within 2 deg of what the drifted pose believes". This is the
+   half the shooter camera fixes, and it is why the feature and the gate belong
+   together.
+2. **Exit velocity inheritance.** When the robot is moving, the ball leaves with
+   `v_exit(robot) + f * v_robot` in the field frame. `f` is somewhere between 0
+   (the ball is launched in the robot frame and the robot slides under it) and 1
+   (the ball leaves with the full chassis velocity). `ShotMath.motionCompensatedRpm`
+   currently assumes **f = 1**: it lowers the commanded RPM when closing so the
+   ball does not fly the extra `v * t_flight` metres. If the real `f` is 0.5, the
+   correct gain is half of `Shooter/Motion Gain (suggested)`, and the current
+   default over-compensates by the same factor.
+
+   **A camera cannot measure `f`.** It is a property of the ball and the wheels,
+   not of the geometry. Measure it once (10 min, 9.7) and put the answer into
+   `Motion Comp Gain`; after that both compensation terms are calibrated.
+
+So: shoot-on-the-fly without a hood is possible, but it is an **envelope**, not
+a mode. Inside the envelope the shot is as good as a stationary one; outside it,
+no amount of software recovers it. The envelope is:
+
+* **short range** - the distance where the fixed-angle flight time is still
+  short. `Moving Shot Max Distance (m)` enforces this in `ShotGate`
+  (`0` = off, the default). Start at 3.5 m and widen only with data.
+* **tight heading window** - keep `Max Fire Yaw Rate` at 45 deg/s or less.
+  Turning is worse than translating, because it rotates the aim during the
+  flight, and the gate's yaw term is the only thing watching it.
+* **RPM at the table value for the range at release** - with `Motion Comp Gain`
+  calibrated to the measured `f`, not the suggested full-inheritance value.
+* **one shot per settled heading** - the feeder cannot recover the wheel between
+  balls while the heading is still slewing.
+
+| Shot | Envelope | Why |
+| --- | --- | --- |
+| Stationary, any table distance | unchanged | 0 m/s: neither compensation term applies |
+| Moving at <= 3.5 m | allowed with the gate open | short flight, small `v * t` |
+| Moving at 3.5-5 m | only with `f` calibrated and tested | flight time grows, `v * t` grows |
+| Moving beyond 5 m | not worth it without a hood | flight time is the dominant error |
+
+### 9.6 Vibration: the one thing to check before trusting this
+
+The camera shares a structure with two spinning flywheels. A tag that is
+smearing across pixels reads as a slightly wrong angle, and the residual has no
+way to know. Before enabling `Use Shooter Camera Aim`, compare
+`Vision/ShooterCam Aim Error (deg)` with the wheels stopped and at full speed:
+
+* stable to ~0.3 deg in both cases: good, enable it;
+* noisy or biased only while spinning: mount the camera on a compliant bracket,
+  or leave the feature off and accept the pose-based aim. This is the one
+  failure mode where the camera is *worse* than odometry, because it is
+  confidently wrong.
+
+### 9.7 Measure `f` (the velocity inheritance fraction), 10 min
+
+1. Calibrate the table (§5.3) and the heading (§5.4) first.
+2. `Motion Comp Gain = 0`. `Use Distance Table = on`.
+3. Standing still at 3 m: fire 5 balls, note where they land. This is the
+   reference group.
+4. Strafing sideways at 1.0 m/s, launcher still pointed at the hub (the
+   drivetrain's `getRotationTargetOverride()` holds the heading): fire 5 balls.
+   Measure the mean lateral miss `d` at the hub. Then
+   `f = d / (v * t_flight)`, with `t_flight` from the table's nominal 0.5 s.
+5. Repeat at 1.5 m/s. `f` should come out the same; if it does not, the miss is
+   dominated by something else (wheel recovery, heading lag) and moving shots
+   should stay inside the short-range envelope until that is fixed.
+6. Set `Motion Comp Gain = f * Shooter/Motion Gain (suggested)`.
+7. Re-run step 4. The lateral miss should be small enough to ignore.
+
+Sign check when reading the results: if shots taken **toward** the hub land
+short *and* shots taken **away** from it land long, the gain is too high for the
+real `f` - lower it. That is the signature of over-compensating, and it is the
+most likely first result, because the suggested value assumes `f = 1`.
+
+### 9.8 What this does not fix
+
+* **The hood.** No camera changes the launch angle. `§7` still stands: at one
+  angle, some distances are unreachable and the flight time is whatever the
+  table says.
+* **Wheel recovery.** The camera knows the aim is good; it has no idea the wheel
+  dipped 300 RPM when the last ball left. `ShotGate`'s speed gate is still the
+  only defence, and inertia is still the hardware fix.
+* **Ball metering.** Without a beam break the feeder cannot promise one ball per
+  burst; a camera pointed at the hub cannot see the throat.
+* **Spin and compression.** Exit velocity and spin come from the wheel surface,
+  not from the target geometry.
+
 
 ---
 

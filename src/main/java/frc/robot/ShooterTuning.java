@@ -41,6 +41,11 @@ public final class ShooterTuning {
   public static final String MAX_FIRE_YAW_DPS = PREFIX + "Max Fire Yaw Rate (deg/s)";
   public static final String MOTION_GAIN = PREFIX + "Motion Comp Gain (RPM per m/s)";
   public static final String HEADING_TRIM_DEG = PREFIX + "Heading Trim (deg)";
+  public static final String MOVING_SHOT_MAX_DISTANCE_M = PREFIX + "Moving Shot Max Distance (m)";
+  public static final String MOVING_SHOT_SPEED_THRESHOLD_MPS = PREFIX + "Moving Shot Threshold (m/s)";
+  public static final String USE_SHOOTER_CAMERA_AIM = PREFIX + "Use Shooter Camera Aim";
+  public static final String CAMERA_AIM_MAX_AGE_SECONDS = PREFIX + "Camera Aim Max Age (s)";
+  public static final String CAMERA_AIM_MAX_AMBIGUITY = PREFIX + "Camera Aim Max Ambiguity";
 
   private static final double DEFAULT_SPEED_TOLERANCE_PERCENT = 3.0;
   private static final double DEFAULT_SPEED_SETTLE_SECONDS = 0.15;
@@ -49,6 +54,10 @@ public final class ShooterTuning {
   private static final double DEFAULT_DISTANCE_HYSTERESIS_IN = 1.0;
   private static final double DEFAULT_MAX_FIRE_SPEED_MPS = 0.35;
   private static final double DEFAULT_MAX_FIRE_YAW_DPS = 45.0;
+  private static final double DEFAULT_MOVING_SHOT_MAX_DISTANCE_M = 0.0;
+  private static final double DEFAULT_MOVING_SHOT_SPEED_THRESHOLD_MPS = 0.20;
+  private static final double DEFAULT_CAMERA_AIM_MAX_AGE_SECONDS = 0.08;
+  private static final double DEFAULT_CAMERA_AIM_MAX_AMBIGUITY = 0.35;
 
   /** Publishes defaults for keys that do not exist yet, preserving dashboard edits. */
   public static void publishDefaults() {
@@ -64,9 +73,17 @@ public final class ShooterTuning {
     putNumberDefault(MAX_FIRE_YAW_DPS, DEFAULT_MAX_FIRE_YAW_DPS);
     putNumberDefault(MOTION_GAIN, 0.0);
     putNumberDefault(HEADING_TRIM_DEG, 0.0);
-    // putBoolean-style default: read the current value and write it back, so an
-    // operator edit survives a redeploy.
-    SmartDashboard.putBoolean(USE_DISTANCE_TABLE, SmartDashboard.getBoolean(USE_DISTANCE_TABLE, false));
+    putNumberDefault(MOVING_SHOT_MAX_DISTANCE_M, DEFAULT_MOVING_SHOT_MAX_DISTANCE_M);
+    putNumberDefault(MOVING_SHOT_SPEED_THRESHOLD_MPS, DEFAULT_MOVING_SHOT_SPEED_THRESHOLD_MPS);
+    putNumberDefault(CAMERA_AIM_MAX_AGE_SECONDS, DEFAULT_CAMERA_AIM_MAX_AGE_SECONDS);
+    putNumberDefault(CAMERA_AIM_MAX_AMBIGUITY, DEFAULT_CAMERA_AIM_MAX_AMBIGUITY);
+    putBooleanDefault(USE_DISTANCE_TABLE, false);
+    putBooleanDefault(USE_SHOOTER_CAMERA_AIM, false);
+  }
+
+  /** Writes {@code value} only if the key has never been published. */
+  public static void putBooleanDefault(String key, boolean value) {
+    SmartDashboard.putBoolean(key, SmartDashboard.getBoolean(key, value));
   }
 
   /** Writes {@code value} only if the key has never been published. */
@@ -132,5 +149,34 @@ public final class ShooterTuning {
   /** Mechanical aim bias, added to the commanded heading. See SHOOTER_ACCURACY.md. */
   public static double headingTrimDegrees() {
     return get(HEADING_TRIM_DEG, 0.0, -15.0, 15.0);
+  }
+
+  /**
+   * Furthest shot allowed while the robot is moving. 0 disables the check, so a
+   * stationary robot is unaffected and a moving one is limited only by
+   * {@link #maxFireSpeedMps()}. See SHOOTER_ACCURACY.md, "Shooting on the move".
+   */
+  public static double movingShotMaxDistanceMeters() {
+    return get(MOVING_SHOT_MAX_DISTANCE_M, DEFAULT_MOVING_SHOT_MAX_DISTANCE_M, 0.0, 12.0);
+  }
+
+  /** Speed below which a shot counts as stationary and the distance check is skipped. */
+  public static double movingShotSpeedThresholdMps() {
+    return get(MOVING_SHOT_SPEED_THRESHOLD_MPS, DEFAULT_MOVING_SHOT_SPEED_THRESHOLD_MPS, 0.0, 3.0);
+  }
+
+  /** When true, the shooter camera's tag residual corrects the pose-based aim. */
+  public static boolean useShooterCameraAim() {
+    return SmartDashboard.getBoolean(USE_SHOOTER_CAMERA_AIM, false);
+  }
+
+  /** Oldest camera frame still used for aim correction. */
+  public static double cameraAimMaxAgeSeconds() {
+    return get(CAMERA_AIM_MAX_AGE_SECONDS, DEFAULT_CAMERA_AIM_MAX_AGE_SECONDS, 0.02, 0.25);
+  }
+
+  /** Largest single-tag pose ambiguity still used for aim correction. */
+  public static double cameraAimMaxAmbiguity() {
+    return get(CAMERA_AIM_MAX_AMBIGUITY, DEFAULT_CAMERA_AIM_MAX_AMBIGUITY, 0.0, 1.0);
   }
 }

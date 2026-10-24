@@ -46,6 +46,8 @@ public final class ShotGate {
    * @param headingErrorDeg degrees between the current heading and the shot
    * @param distanceErrorMeters meters from the desired shooting distance;
    *     {@link Double#NaN} disables the distance gate
+   * @param distanceMeters muzzle-to-hub distance; {@link Double#NaN} when
+   *     unknown. Used only by the moving-shot envelope.
    * @param linearSpeedMps chassis translation speed
    * @param yawRateDps chassis yaw rate
    */
@@ -53,10 +55,19 @@ public final class ShotGate {
       double speedRatio,
       double headingErrorDeg,
       double distanceErrorMeters,
+      double distanceMeters,
       double linearSpeedMps,
       double yawRateDps) {}
 
-  /** Per-loop tolerances, normally built from {@link ShooterTuning}. */
+  /**
+   * Per-loop tolerances, normally built from {@link ShooterTuning}.
+   *
+   * @param movingSpeedThresholdMps speed above which a shot counts as "on the
+   *     move" and the moving-shot distance limit applies
+   * @param movingMaxDistanceMeters furthest shot allowed while moving;
+   *     {@code <= 0} disables the limit, which is the default, so raising
+   *     {@code maxLinearSpeedMps} on its own never changes behaviour
+   */
   public record Config(
       double speedToleranceFraction,
       double speedSettleSeconds,
@@ -66,7 +77,9 @@ public final class ShotGate {
       double distanceEnterToleranceMeters,
       double distanceHysteresisMeters,
       double maxLinearSpeedMps,
-      double maxYawRateDps) {}
+      double maxYawRateDps,
+      double movingSpeedThresholdMps,
+      double movingMaxDistanceMeters) {}
 
   /** "In band for N seconds" timer. */
   private static final class Dwell {
@@ -147,11 +160,39 @@ public final class ShotGate {
     }
 
     // Chassis motion: a spinning or sprinting robot changes where the ball goes.
+    // On top of the flat speed limit, a moving shot can be restricted to a
+    // shorter range band: with a fixed launch angle the flight time grows with
+    // distance, so the further out the robot is the more its own motion and
+    // the table's slope error show up at the hub.
     boolean motionOk =
         withinLimit(inputs.linearSpeedMps(), config.maxLinearSpeedMps())
-            && withinLimit(inputs.yawRateDps(), config.maxYawRateDps());
+            && withinLimit(inputs.yawRateDps(), config.maxYawRateDps())
+            && insideMovingShotEnvelope(inputs, config);
 
     return new Status(speedDwell.active(), aimDwell.active(), atDistance, motionOk);
+  }
+
+  /**
+   * Moving-shot envelope: while the robot is rolling, only trust shots inside
+   * {@code movingMaxDistanceMeters}. A missing distance or a disabled limit
+   * never blocks the shot - the same "do not block on a sensor glitch" rule the
+   * other gates use.
+   */
+  private static boolean insideMovingShotEnvelope(Inputs inputs, Config config) {
+    double limit = config.movingMaxDistanceMeters();
+    if (!Double.isFinite(limit) || limit <= 0.0) {
+      return true;
+    }
+    double threshold = Math.abs(config.movingSpeedThresholdMps());
+    boolean moving = Double.isFinite(inputs.linearSpeedMps())
+        && Math.abs(inputs.linearSpeedMps()) > threshold;
+    if (!moving) {
+      return true;
+    }
+    if (!Double.isFinite(inputs.distanceMeters())) {
+      return true;
+    }
+    return inputs.distanceMeters() <= limit;
   }
 
   private static boolean withinLimit(double value, double limit) {

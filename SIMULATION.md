@@ -331,6 +331,12 @@ Python mirror's constants still match `VisionFusion.java`.
   model brake mode, so `MOVING` can persist for a couple of seconds after the
   ranging drive; the real robot (brake mode on all four modules) stops in
   roughly 0.3 s. Full explanation and tuning steps: `SHOOTER_ACCURACY.md`.
+- **Shooter camera aim reads `NO FRAME` in sim**: the simulated rear camera only
+  produces results while a hub tag is inside its field of view. Aim the
+  simulated robot at the hub and watch `Vision/ShooterCam Status`; a healthy
+  frame reads `OK` with an aim error near zero. If the simulated robot is
+  spawned facing away from the hub, rotate it first - this is the same condition
+  the real camera will see, and it is why the feature is off by default.
 - **Arm hangs instead of stowing**: expected — with no command the MAXMotion
   loop is idle and gravity wins, same as hardware in brake-less conditions.
   Schedule a stow on robot boot if you want it held.

@@ -552,6 +552,7 @@ public class Shooter extends SubsystemBase {
             worstSpeedRatio(),
             inputs.headingErrorDeg(),
             distanceErrorMeters(inputs.distanceMeters()),
+            inputs.distanceMeters(),
             inputs.linearSpeedMps(),
             inputs.yawRateDps());
     }
@@ -566,7 +567,9 @@ public class Shooter extends SubsystemBase {
             AutoTuning.aimDistanceToleranceMeters(),
             Units.inchesToMeters(ShooterTuning.distanceHysteresisInches()),
             ShooterTuning.maxFireSpeedMps(),
-            ShooterTuning.maxFireYawRateDps());
+            ShooterTuning.maxFireYawRateDps(),
+            ShooterTuning.movingShotSpeedThresholdMps(),
+            ShooterTuning.movingShotMaxDistanceMeters());
     }
 
     /** Measured/target ratio of whichever flywheel is furthest from its target. */
@@ -636,8 +639,10 @@ public class Shooter extends SubsystemBase {
             }
             if (!m_status.motionOk()) {
                 return String.format(
-                    "MOVING (%.2f m/s, %.0f deg/s)",
-                    m_lastInputs.linearSpeedMps(), m_lastInputs.yawRateDps());
+                    "MOVING (%.2f m/s, %.0f deg/s, %.1f m)",
+                    m_lastInputs.linearSpeedMps(),
+                    m_lastInputs.yawRateDps(),
+                    m_lastInputs.distanceMeters());
             }
         }
         return "WAITING";
@@ -659,6 +664,10 @@ public class Shooter extends SubsystemBase {
         SmartDashboard.putBoolean("Shooter/Aimed", m_status.aimed());
         SmartDashboard.putBoolean("Shooter/At Distance", m_status.atDistance());
         SmartDashboard.putBoolean("Shooter/Motion OK", m_status.motionOk());
+        SmartDashboard.putNumber(
+            "Shooter/Moving Shot Limit (m)", ShooterTuning.movingShotMaxDistanceMeters());
+        SmartDashboard.putBoolean(
+            "Shooter/Camera Aim Enabled", ShooterTuning.useShooterCameraAim());
 
         SmartDashboard.putNumber("Shooter/Front RPM Error", shooterFront.getEncoder().getVelocity() - m_fronttargetRPM);
         SmartDashboard.putNumber("Shooter/Back RPM Error", shooterBack.getEncoder().getVelocity() - m_backtargetRPM);

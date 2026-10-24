@@ -419,6 +419,19 @@ public class RobotContainer {
 
         double headingError = MathUtil.inputModulus(
             aim.headingDegrees() - pose.getRotation().getDegrees(), -180.0, 180.0);
+        // The shooter camera measures the angle to the AprilTag the ball has to
+        // go through, in the frame the ball leaves from. getAimSolution() has
+        // already folded its residual in when the feature is enabled, so this
+        // block only mirrors it onto the dashboard. Off by default: the shot is
+        // unchanged until ShooterTuning says to use it.
+        if (ShooterTuning.useShooterCameraAim()) {
+            ShooterCameraAim.Correction correction = m_robotDrive.getShooterCameraAim();
+            SmartDashboard.putBoolean("Shooter/Camera Aim Used", correction.valid());
+            SmartDashboard.putString("Shooter/Camera Aim Status", correction.reason());
+            SmartDashboard.putNumber("Shooter/Camera Aim Correction (deg)", correction.aimErrorDeg());
+            SmartDashboard.putNumber(
+                "Shooter/Camera Range Correction (m)", correction.rangeErrorMeters());
+        }
 
         return new ShotInputs(
             aim.distanceMeters(),

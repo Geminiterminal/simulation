@@ -170,6 +170,38 @@ public final class Constants {
             Units.degreesToRadians(-90.0)
         ));
 
+    /**
+     * The camera mounted on the shooter (top right, looking out of the back of
+     * the robot alongside the launcher). It is the rear-facing camera above;
+     * the two names are kept separate so the shooter code can be pointed at a
+     * different camera later without touching the fusion pipeline.
+     *
+     * <p>If the shooter camera is ever re-mounted, update
+     * {@link #kRobotToBackCamera} - pose fusion and the aim correction below
+     * both read that one transform.
+     */
+    public static final String kShooterCameraName = kBackCameraName;
+
+    /** Mounting transform of the shooter camera, in the robot frame. */
+    public static final Transform3d kRobotToShooterCamera = kRobotToBackCamera;
+
+    // Aim-correction limits for the shooter camera (ShooterCameraAim).
+    // These are sanity bounds, not tuning: they reject a bad detection instead
+    // of yanking the aim. The frame-age and ambiguity limits are live knobs in
+    // ShooterTuning; these two stay constants because changing them mid-match
+    // would only hide a broken mount.
+    /** Closest tag worth using for aim (m). */
+    public static final double kCameraAimMinRangeMeters = 0.75;
+
+    /** Furthest tag worth using for aim (m); hub tags sit inside this. */
+    public static final double kCameraAimMaxRangeMeters = 7.5;
+
+    /** Largest angular residual applied (deg). Bigger is a broken pose, not aim error. */
+    public static final double kCameraAimMaxCorrectionDeg = 8.0;
+
+    /** Largest radial residual applied (m). */
+    public static final double kCameraAimMaxRangeCorrectionMeters = 0.75;
+
     // Simulated camera characteristics (calibrated to the team's cameras).
     // Re-measure intrinsics with the PhotonVision camera calibration tool and
     // update these numbers if the real calibration deviates.
