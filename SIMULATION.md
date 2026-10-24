@@ -242,6 +242,60 @@ The dashboard entries are bounded in code to avoid accidental extreme values.
 Dashboard edits are runtime tuning only; they do not update PathPlanner asset
 files or replace physical system identification.
 
+## Running SysId in the simulation
+
+`SysIdSupport` exposes every mechanism through the `SysId Mechanism` chooser and
+four test triggers (Thrustmaster buttons 11/13/15/16, the matching
+`SysId/Quasistatic|Dynamic Forward|Reverse` dashboard buttons, or the
+`SysId: ...` entries in the `Auto Chooser`, which run all four legs back to
+back). Logs land in the `DataLogManager` `.wpilog` that `Robot.robotInit()`
+starts before `RobotContainer` is built.
+
+**Enable the Driver Station first.** REVLib's SPARK simulation forces the applied
+output to 0 V while the DS is disabled, and a dashboard-launched SysId command
+keeps "running" while disabled - the test then logs a perfectly flat, useless
+run. `DriveSubsystem` now detects that combination (voltage commanded, nothing
+applied) and prints a Driver Station warning instead of failing silently.
+
+### What each drivetrain test should look like on screen
+
+| Mechanism | Chassis motion | Where to watch |
+| --- | --- | --- |
+| `Drivetrain Linear` | Translates along +X/-X | Field widget robot pose, `Sim/Ground Truth X (m)`, `Sim/Drive <corner> Speed (mps)` |
+| `Drivetrain Angular` | Spins in place | Field widget robot pose, `Sim/Ground Truth Heading (deg)`, `Auto/Measured Omega (radps)` |
+| `Drivetrain Steer` | **None - by design** | Four `<corner> Module` arrows on the Field widget, `Sim/Steer <corner> Angle (deg)` / `Rate (deg/s)` / `Volts`, `Sim/Steer FL Continuous Angle (rot)` |
+
+The steer (azimuth) routine holds the drive wheels at 0 V and sweeps the four
+NEO 550 turning motors, so the robot never translates or rotates. Before the
+module arrows and `Sim/Steer ...` readouts existed there was literally nothing
+on screen to show the test was running. `Sim/Steer FL Continuous Angle (rot)`
+mirrors exactly what the routine logs (`SysIdRoutineLog.angularPosition()`
+converts the unwrapped radian angle to rotations), so the dashboard and the
+`position-steer-front-left-drive-steer` trace in the log must agree; the test
+state is on `sysid-test-state-drive-steer`.
+
+### If a steer run still looks dead
+
+| `Sim/SysId Commanded Volts` | `Sim/Steer <corner> Volts` | `Sim/Steer <corner> Angle (deg)` | Meaning |
+| --- | --- | --- | --- |
+| 0 | 0 | flat | The routine never ran: wrong `SysId Mechanism` selection, `Disabled`, or the trigger/auto never scheduled (`Sim/SysId Last Test` stays `none`). |
+| ramping/±6 | 0 | flat | The SPARKs are not applying output: DS disabled, or a simulated SPARK fault (REVLib prints `Device stopped due to fault`). |
+| ramping/±6 | non-zero | flat | Azimuth encoder plumbing - compare `Sim/Steer <corner> Rate (deg/s)` and `Sim/Steer Motor Current (A)`. |
+| ramping/±6 | non-zero | sweeping | Working. Analyse the `.wpilog`. |
+
+### Simulation fidelity caveats for the azimuth test
+
+REVLib's `SparkSim` estimates motor current from the *selected sensor's* RPM.
+The Through Bore encoder sits on the output of the 46.42:1 azimuth gearbox, so
+the estimate misses nearly all of the back-EMF and reports tens of amps where
+the real motor draws a few. The turning SPARK's 20 A smart current limit then
+throttles the simulated steer motor to roughly 2-3 V even when 6 V is commanded
+(`Sim/Steer Motor Current (A)` shows what REVLib is limiting against). The
+logged voltage is the throttled one, so position and velocity stay
+self-consistent and the routine is a valid end-to-end pipeline check - but kV/kA
+recovered in simulation are **not** the real robot's. Characterize the azimuth
+motors on hardware before trusting the numbers.
+
 ## Calibration data
 
 All physics constants live in `Constants.SimulationConstants`; camera metadata

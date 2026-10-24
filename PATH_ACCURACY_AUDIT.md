@@ -5,7 +5,7 @@
 1. **REVLib 2026 `SparkSim.iterate()` & `SparkAbsoluteEncoderSim.iterate()` unit mismatch (`MAXSwerveModule.java`)**
    - In REVLib `2026.0.3`, `SparkSim.iterate(velocity, vbus, dt)` divides `velocity` internally by `encoder.velocityConversionFactor` (`0.000785874 (m/s)/RPM` for drive) and multiplies back by that conversion factor when reporting `getEncoder().getVelocity()`.
    - Passing motor-shaft RPM into `SparkMaxSim.iterate()` caused a **1,272.5×** runaway encoder velocity scale error on drive and a **9.55×** scale error plus unstable sign inversion (`-m_turningSparkSim.getAppliedOutput()`) on steer.
-   - `MAXSwerveModule.simulationPeriodic()` now passes wheel linear speed (`m/s`) to `m_drivingSparkSim.iterate(...)`, positive steer output voltage to `m_turnPhysicsSim`, and module angular velocity (`rad/s`) to both `m_turningSparkSim.iterate(...)` and `m_turningEncoderSim.iterate(...)`.
+   - `MAXSwerveModule.simulationPeriodic()` now passes wheel linear speed (`m/s`) to `m_drivingSparkSim.iterate(...)`, positive steer output voltage to `m_turnPhysicsSim`, and module angular velocity (`rad/s`) to `m_turningSparkSim.iterate(...)`. (The azimuth encoder state itself is no longer re-integrated with `SparkAbsoluteEncoderSim.iterate()` - see item 6.)
 
 2. **REVLib 2026 `FeedForwardConfig.kV` 12× voltage unit bug (`Configs.java`, `Shooter.java`, `Intake.java`)**
    - REVLib 2025/2026 closed-loop feedforward (`closedLoop.feedForward.kV(...)` / deprecated `velocityFF(...)`) specifies voltage gain in **Volts per velocity unit**, not duty-cycle `[0, 1]` per velocity unit.
@@ -24,6 +24,13 @@
 
 5. **Battery simulation voltage & regen current guards (`MAXSwerveModule.java`, `Shooter.java`, `Intake.java`, `RobotContainer.java`)**
    - Clamped simulated supply currents to finite positive draws and guarded `RoboRioSim.setVInVoltage(...)` so braking regeneration never drives simulated bus voltage negative, zero, or `NaN`.
+
+6. **"Drivetrain Steer" SysId looked dead in simulation (`MAXSwerveModule.java`, `DriveSubsystem.java`)**
+   - The azimuth routine holds the drive wheels at `0 V`, so the chassis never translates or rotates and nothing on the field widget moved. `MAXSwerveModule.simulationPeriodic()` also re-integrated the Through Bore encoder with `SparkAbsoluteEncoderSim.iterate()` on top of the position/velocity that `SparkMaxSim.iterate()` already mirrors into the selected feedback sensor: the reported module angle led the plant by a full loop of travel (5-15° during a sweep) and, because `SparkAbsoluteEncoderSim.iterate()` only integrates position and never publishes velocity, the logged azimuth velocity depended entirely on REVLib's internal mirroring. A flat-zero velocity trace makes the SysId OLS fit degenerate, which presents as "the steer test does nothing".
+   - The simulated encoder state is now written straight from the steer plant - position wrapped to `[0, 2π)` like real hardware (so the multi-turn unwrap SysId relies on is exercised in sim), velocity in `rad/s` - keeping the logged position and velocity pair consistent.
+   - `DriveSubsystem` publishes per-module sim telemetry (`Sim/Steer <FL|FR|RL|RR> Angle (deg)` / `Rate (deg/s)` / `Volts`, `Sim/Drive <corner> Speed (mps)` / `Volts`, `Sim/Steer Motor Current (A)`, `Sim/Steer FL Continuous Angle (rot)`, `Sim/SysId Commanded Volts`, `Sim/SysId Last Test`) and draws a `<corner> Module` heading arrow at each module's ground-truth field position, so azimuth motion is visible while the chassis stands still.
+   - A SysId run that commands voltage the simulated SPARKs never apply (REVLib forces `0 V` output while the Driver Station is disabled) now reports a one-shot Driver Station warning instead of silently logging a flat run, and the steer entry points require the drivetrain from their first instant (`Commands.runOnce(this::clearHeadingHoldForSysId, this)`) like the linear/angular pre-align phase does.
+   - Remaining sim-only fidelity gap, documented in `SIMULATION.md`: REVLib estimates motor current from the selected sensor's RPM, so the 46.42:1 azimuth reduction makes the estimate miss nearly all back-EMF and the 20 A smart current limit throttles the simulated steer motor to ~2-3 V for a 6 V command. Sim-identified azimuth kV/kA are pipeline checks, not real-robot gains.
 
 ## Closed-loop simulation verification results (all 5 autonomous routines)
 

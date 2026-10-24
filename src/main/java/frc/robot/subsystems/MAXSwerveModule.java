@@ -35,10 +35,21 @@ import frc.robot.Constants.SimulationConstants;
  * {@link SimulationConstants}). Each loop the plant is driven by the emulated SPARK output, and its
  * mechanism velocity is passed directly in the encoder's configured post-conversion units to REVLib:
  * wheel linear velocity ({@code m/s}) for {@link SparkMaxSim#iterate} on the drive motor, and
- * module angular velocity ({@code rad/s}) for both {@link SparkMaxSim#iterate} and
- * {@link SparkAbsoluteEncoderSim#iterate} on the steer module. REVLib divides internally by the
- * configured velocity conversion factor to compute motor RPM, integrates position, and emulates the
- * onboard closed-loop firmware.
+ * module angular velocity ({@code rad/s}) for {@link SparkMaxSim#iterate} on the steer module.
+ * REVLib divides internally by the configured velocity conversion factor to compute motor RPM,
+ * integrates position, and emulates the onboard closed-loop firmware. The azimuth Through Bore
+ * encoder state is then written straight from the steer plant (position wrapped to {@code [0, 2pi)},
+ * velocity in {@code rad/s}) so the values SysId logs are the plant's, not a second integration of
+ * them.
+ *
+ * <p>Simulation caveat for azimuth SysId: REVLib's {@code SparkSim} estimates motor current from the
+ * selected sensor's RPM. The azimuth sensor sits on the output of a 46.42:1 gearbox, so the estimate
+ * treats the module's ~13 rad/s as the motor's own speed and misses almost all of the back-EMF,
+ * reporting tens of amps where the real motor draws a few. The turning SPARK's 20 A smart current
+ * limit then throttles the simulated steer motor to roughly 2-3 V even when 6 V is commanded. The
+ * logged voltage is the throttled one, so the position and velocity traces stay self-consistent, but
+ * gains identified in simulation are not the real robot's. {@code Sim/Steer Motor Current (A)} on the
+ * dashboard shows the estimate REVLib is limiting against.
  */
 public class MAXSwerveModule {
   private final SparkMax m_drivingSpark;
@@ -356,12 +367,33 @@ public class MAXSwerveModule {
         wheelRadiansPerSecondToMetersPerSecond(m_drivePhysicsSim.getAngularVelocityRadPerSec());
     double moduleTurnRateRadPerSec = m_turnPhysicsSim.getAngularVelocityRadPerSec();
 
-    // 3. REVLib 2026 SparkSim.iterate and SparkAbsoluteEncoderSim.iterate expect
-    //    post-conversion units matching the configured encoder conversion factors:
-    //    wheel linear speed (m/s) for drive, module angular rate (rad/s) for steer.
+    // 3. REVLib 2026 SparkSim.iterate expects post-conversion units matching the
+    //    configured encoder conversion factors: wheel linear speed (m/s) for
+    //    drive, module angular rate (rad/s) for steer.
     m_drivingSparkSim.iterate(wheelSpeedMetersPerSec, busVoltage, dtSeconds);
     m_turningSparkSim.iterate(moduleTurnRateRadPerSec, busVoltage, dtSeconds);
-    m_turningEncoderSim.iterate(moduleTurnRateRadPerSec, dtSeconds);
+
+    // 4. Publish the azimuth encoder state explicitly instead of re-integrating
+    //    it with SparkAbsoluteEncoderSim.iterate():
+    //
+    //    a) SparkMaxSim.iterate() already mirrors its internal position and
+    //       velocity into the selected feedback sensor (the absolute encoder,
+    //       for the turning SPARK). Calling SparkAbsoluteEncoderSim.iterate()
+    //       on top of that added a SECOND omega*dt step every loop, so the
+    //       reported module angle led the physics plant by a full loop of
+    //       travel (5-15 deg during an azimuth SysId sweep) and disagreed with
+    //       the reported angular velocity - exactly the position/velocity
+    //       inconsistency that makes an azimuth SysId trace useless.
+    //    b) SparkAbsoluteEncoderSim.iterate() only integrates POSITION; it never
+    //       writes the encoder VELOCITY. Writing both from the plant keeps the
+    //       pair consistent no matter which REVLib code path is live.
+    //
+    //    The plant position is wrapped into [0, 2*pi) like the real Through Bore
+    //    encoder, so the multi-turn unwrapping that getContinuousSteerPosition
+    //    Radians() performs for SysId is exercised in simulation too.
+    m_turningEncoderSim.setPosition(
+        MathUtil.inputModulus(m_turnPhysicsSim.getAngularPositionRad(), 0.0, 2.0 * Math.PI));
+    m_turningEncoderSim.setVelocity(moduleTurnRateRadPerSec);
     updateContinuousTurningAngle();
   }
 
@@ -405,5 +437,18 @@ public class MAXSwerveModule {
       total += turnSupplyAmps;
     }
     return total;
+  }
+
+  /**
+   * Simulated steering-motor current in amps, exactly as REVLib's SPARK sim estimates it. Published
+   * on the dashboard so the azimuth current-limit throttling described in the class javadoc is
+   * visible while running a {@code Drivetrain Steer} SysId test.
+   */
+  public double getSimulatedSteerCurrentAmps() {
+    if (!RobotBase.isSimulation()) {
+      return 0.0;
+    }
+    double steerAmps = m_turningSparkSim.getMotorCurrent();
+    return Double.isFinite(steerAmps) ? steerAmps : 0.0;
   }
 }

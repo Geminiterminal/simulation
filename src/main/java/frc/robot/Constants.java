@@ -37,11 +37,18 @@ public final class Constants {
     // Distance between front and back wheels on robot
     public static final double kWheelBase = Units.inchesToMeters(21);
 
-    public static final SwerveDriveKinematics kDriveKinematics = new SwerveDriveKinematics(
+    /**
+     * Module centre offsets from the robot centre, in the standard WPILib swerve order used
+     * everywhere in this project: front-left, front-right, rear-left, rear-right.
+     */
+    public static final Translation2d[] kModuleTranslations = {
         new Translation2d(kWheelBase / 2, kTrackWidth / 2),
         new Translation2d(kWheelBase / 2, -kTrackWidth / 2),
         new Translation2d(-kWheelBase / 2, kTrackWidth / 2),
-        new Translation2d(-kWheelBase / 2, -kTrackWidth / 2));
+        new Translation2d(-kWheelBase / 2, -kTrackWidth / 2)};
+
+    public static final SwerveDriveKinematics kDriveKinematics =
+        new SwerveDriveKinematics(kModuleTranslations);
 
     // Angular offsets of the modules relative to the chassis in radians
     public static final double kFrontLeftChassisAngularOffset = -Math.PI / 2;
