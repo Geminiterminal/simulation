@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Identification</title>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div class="app-window">
+    <!-- Title bar -->
+    <header class="titlebar">
+      <div class="titlebar-icon">⚙</div>
+      <div class="titlebar-title">System Identification</div>
+      <div class="titlebar-controls">
+        <button id="themeToggle" class="titlebar-btn theme-btn" title="Toggle dark / light mode">🌙</button>
+        <button class="titlebar-btn" title="Minimize">—</button>
+        <button class="titlebar-btn" title="Maximize">▢</button>
+        <button class="titlebar-btn" title="Close">✕</button>
+      </div>
+    </header>
+
+    <!-- Menu bar -->
+    <nav class="menubar" id="menubar">
+      <div class="menu">
+        <button class="menu-title" data-menu="workspace">Workspace</button>
+        <div class="menu-dropdown" id="menu-workspace">
+          <button data-action="open-log">Open Data Log…</button>
+          <button data-action="load-demo">Load Demo Log</button>
+          <hr />
+          <button data-action="reset-workspace">Reset Workspace</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-title" data-menu="view">View</button>
+        <div class="menu-dropdown" id="menu-view">
+          <button data-action="toggle-theme">Toggle Dark / Light Mode</button>
+          <button data-action="toggle-program-log">Toggle Program Log</button>
+          <hr />
+          <button data-action="refit-plots">Refit Plots</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-title" data-menu="widgets">Widgets</button>
+        <div class="menu-dropdown" id="menu-widgets">
+          <button data-panel="logPanel">☑ Log Loader</button>
+          <button data-panel="dataSelectorPanel">☑ Data Selector</button>
+          <button data-panel="analyzerPanel">☑ Analyzer</button>
+          <button data-panel="plotsPanel">☑ Diagnostic Plots</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-title" data-menu="info">Info</button>
+        <div class="menu-dropdown" id="menu-info">
+          <button data-action="about">About</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-title" data-menu="docs">Docs</button>
+        <div class="menu-dropdown" id="menu-docs">
+          <button data-action="docs-guide">User Guide</button>
+          <button data-action="docs-math">Math Reference</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main workspace -->
+    <main class="workspace">
+      <!-- Left column -->
+      <section class="column column-left">
+        <div class="panel" id="logPanel">
+          <div class="panel-header">
+            <span class="panel-collapse" data-collapse="logPanelBody">▼</span>
+            <span class="panel-title">Log Loader</span>
+            <span class="panel-controls"><button class="panel-btn">—</button><button class="panel-btn">✕</button></span>
+          </div>
+          <div class="panel-body" id="logPanelBody">
+            <button class="btn btn-accent" id="openLogBtn">Open data log file…</button>
+            <input type="file" id="logFileInput" accept=".wpilog,.json,.csv,.txt" hidden />
+            <button class="btn" id="demoLogBtn">Load demo data</button>
+            <div class="log-summary" id="logSummary">No data log loaded.</div>
+            <div class="filter-row">
+              <input type="text" id="logFilter" class="input" placeholder="Filter" />
+            </div>
+            <div class="entry-table">
+              <div class="entry-table-header">
+                <span>Name</span><span>Type</span>
+              </div>
+              <div class="entry-tree" id="entryTree"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="dataSelectorPanel">
+          <div class="panel-header">
+            <span class="panel-collapse" data-collapse="dataSelectorBody">▼</span>
+            <span class="panel-title">Data Selector</span>
+            <span class="panel-controls"><button class="panel-btn">—</button><button class="panel-btn">✕</button></span>
+          </div>
+          <div class="panel-body" id="dataSelectorBody">
+            <div class="ds-list" id="dsList">
+              <div class="muted">Load a data log to select test states.</div>
+            </div>
+            <div class="ds-options">
+              <label class="inline-label">Motor
+                <select id="dsMotor" class="input select"></select>
+              </label>
+              <label class="inline-label">Units
+                <select id="dsUnits" class="input select">
+                  <option>Meters</option><option>Feet</option><option>Inches</option>
+                  <option>Radians</option><option>Rotations</option><option>Degrees</option>
+                </select>
+              </label>
+              <label class="inline-label">Type
+                <select id="dsType" class="input select">
+                  <option>Simple</option><option>Elevator</option><option>Arm</option>
+                </select>
+              </label>
+            </div>
+            <button class="btn btn-accent" id="dsOkBtn">Ok</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Middle column -->
+      <section class="column column-mid">
+        <div class="panel" id="analyzerPanel">
+          <div class="panel-header">
+            <span class="panel-collapse" data-collapse="analyzerBody">▼</span>
+            <span class="panel-title">Analyzer</span>
+            <span class="panel-controls">
+              <button class="btn btn-small" id="anaResetBtn">Reset</button>
+              <button class="panel-btn">—</button><button class="panel-btn">✕</button>
+            </span>
+          </div>
+          <div class="panel-body" id="analyzerBody">
+            <div class="units-row">
+              <div class="units-info">
+                <div>Units:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="anaUnits">Meters</span></div>
+                <div>Type:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span id="anaType">Simple</span></div>
+              </div>
+            </div>
+            <div class="button-row">
+              <button class="btn" id="overrideUnitsBtn">Override Units</button>
+              <button class="btn" id="resetUnitsBtn">Reset Units from JSON</button>
+            </div>
+
+            <details class="section" open>
+              <summary>Feedforward Analysis</summary>
+              <div class="ff-grid">
+                <div class="ff-left">
+                  <div class="field"><input class="input num" id="ffKs" readonly /><span class="field-label">Ks</span><span class="tip" data-tip="Voltage needed to overcome static friction.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffKv" readonly /><span class="field-label">Kv</span><span class="tip" data-tip="Voltage needed to hold/cruise at a constant velocity while overcoming the counter-electromotive force and any additional friction.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffKa" readonly /><span class="field-label">Ka</span><span class="tip" data-tip="Voltage needed to induce a given acceleration in the motor shaft.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffTimescale" readonly /><span class="field-label">Response Timescale (ms)</span><span class="tip" data-tip="The characteristic timescale of the system response in milliseconds. Both the control loop period and total signal delay should be at least 3-5 times shorter than this to optimally control the system.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffPosDelay" readonly /><span class="field-label">Position Measurement Delay (ms)</span><span class="tip" data-tip="The average elapsed time between the first application of voltage and the first detected change in mechanism position in the step-voltage tests. This includes CAN delays, and may overestimate the true delay for on-motor-controller feedback loops by up to 20 ms.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffVelDelay" readonly /><span class="field-label">Velocity Measurement Delay (ms)</span><span class="tip" data-tip="The average elapsed time between the first application of voltage and the maximum calculated mechanism acceleration in the step-voltage tests. This includes CAN delays, and may overestimate the true delay for on-motor-controller feedback loops by up to 20 ms.">(?)</span></div>
+                </div>
+                <div class="ff-right">
+                  <div class="field"><input class="input num" id="ffWindow" type="number" min="1" max="15" step="2" /><span class="field-label">Window Size</span><span class="tip" data-tip="The number of samples in the velocity median filter's sliding window.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffThreshold" type="number" step="0.001" /><span class="field-label">Velocity Threshold</span><span class="tip" data-tip="Velocity data below this threshold will be ignored.">(?)</span></div>
+                  <div class="field"><input class="input num" id="ffDuration" type="number" step="0.01" min="0" /><span class="field-label">Test Duration</span><span class="tip" data-tip="Seconds of each dynamic (step) test to keep for analysis. Zero picks a default based on the time to reach 90% of the maximum speed.">(?)</span></div>
+                </div>
+              </div>
+            </details>
+
+            <details class="section" open>
+              <summary>Feedback Analysis</summary>
+              <div class="fb-grid">
+                <div class="field preset-field">
+                  <select class="input select" id="fbPreset"></select>
+                  <span class="field-label">Gain Preset</span>
+                  <span class="tip" data-tip="Gain presets represent how feedback gains are calculated for your specific feedback controller:
+
+Default, WPILib: For use with the new WPILib PIDController class.
+CTRE: For use with CTRE units (Phoenix 5 / Phoenix 6).
+REV (Brushless): For use with NEO and NEO 550 motors on a SPARK MAX.
+REV (Brushed): For use with brushed motors connected to a SPARK MAX.
+Venom: For use with Venom integrated encoder units.">(?)</span>
+                  <span class="modified-tag" id="fbModified"></span>
+                </div>
+                <div class="fb-two-col">
+                  <div class="field"><input class="input num" id="fbMaxOut" type="number" step="0.1" /><span class="field-label">Max Controller Output</span></div>
+                  <div class="field"><input class="input num" id="fbVelDenom" type="number" step="0.1" /><span class="field-label">Velocity Denominator Units (s)</span><span class="tip" data-tip="This represents the denominator of the velocity unit used by the feedback controller. For example, CTRE uses 100 ms = 0.1 s.">(?)</span></div>
+                  <div class="field"><input class="input num" id="fbPeriod" type="number" step="0.5" /><span class="field-label">Controller Period (ms)</span></div>
+                  <div class="field checkbox-field"><input type="checkbox" id="fbNormalized" /><span class="field-label">Time-Normalized?</span></div>
+                  <div class="field"><input class="input num" id="fbDelay" type="number" step="0.5" /><span class="field-label">Measurement Delay (ms)</span><span class="tip" data-tip="The average measurement delay of the process variable in milliseconds. This may depend on your encoder settings and choice of motor controller. Default velocity filtering windows are quite long on many motor controllers, so be careful that this value is accurate if the characteristic timescale of the mechanism is small.">(?)</span></div>
+                </div>
+                <hr class="sep" />
+                <div class="field preset-field">
+                  <select class="input select" id="fbLoopType">
+                    <option value="position">Position</option>
+                    <option value="velocity" selected>Velocity</option>
+                  </select>
+                  <span class="field-label">Loop Type</span>
+                </div>
+                <div class="fb-two-col">
+                  <div class="field"><input class="input num" id="fbKp" readonly /><span class="field-label">Kp</span></div>
+                  <div class="field" id="fbQpField"><input class="input num" id="fbQp" type="number" step="0.1" /><span class="field-label" id="fbQpLabel">Max Position Error</span></div>
+                  <div class="field"><input class="input num" id="fbKd" readonly /><span class="field-label">Kd</span></div>
+                  <div class="field"><input class="input num" id="fbQv" type="number" step="0.01" /><span class="field-label" id="fbQvLabel">Max Velocity Error (m/s)</span></div>
+                  <div></div>
+                  <div class="field"><input class="input num" id="fbR" type="number" step="0.1" /><span class="field-label">Max Control Effort (V)</span></div>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right column -->
+      <section class="column column-right">
+        <div class="panel panel-plots" id="plotsPanel">
+          <div class="panel-header">
+            <span class="panel-collapse" data-collapse="plotsBody">▼</span>
+            <span class="panel-title">Diagnostic Plots</span>
+            <span class="panel-controls"><button class="panel-btn">—</button><button class="panel-btn">✕</button></span>
+          </div>
+          <div class="panel-body" id="plotsBody">
+            <div class="plots-toolbar">
+              <input class="input num" id="pointSize" type="number" min="1" max="4" step="0.25" />
+              <span class="field-label">Point Size</span>
+              <select class="input select" id="directionSel">
+                <option value="0">Forward</option>
+                <option value="1">Backward</option>
+              </select>
+              <span class="field-label">Direction</span>
+            </div>
+            <div class="plots-grid">
+              <canvas id="plotQuasistatic"></canvas>
+              <canvas id="plotDynamic"></canvas>
+              <canvas id="plotAccel"></canvas>
+              <canvas id="plotTimesteps"></canvas>
+            </div>
+            <div class="stats-bar">
+              <div class="field"><input class="input num stat" id="statAccelR2" readonly /><span class="field-label">Acceleration R²</span><span class="tip" data-tip="The coefficient of determination of the OLS fit of acceleration versus velocity and voltage. Acceleration is extremely noisy, so this is generally quite small.">(?)</span></div>
+              <div class="field"><input class="input num stat" id="statAccelRmse" readonly /><span class="field-label">Acceleration RMSE</span><span class="tip" data-tip='The standard deviation of the residuals from the predicted acceleration. This can be interpreted loosely as the mean measured disturbance from the "ideal" system equation.'>(?)</span></div>
+              <div class="field"><input class="input num stat" id="statSimR2" readonly /><span class="field-label">Sim velocity R²</span><span class="tip" data-tip="The coefficient of determination the simulated velocity. Velocity is much less-noisy than acceleration, so this is pretty close to 1 for a decent fit.">(?)</span></div>
+              <div class="field"><input class="input num stat" id="statSimRmse" readonly /><span class="field-label">Sim velocity RMSE</span><span class="tip" data-tip="The standard deviation of the residuals from the simulated velocity predictions - essentially the size of the mean error of the simulated model in the recorded velocity units.">(?)</span></div>
+            </div>
+            <div class="program-log" id="programLog">
+              <div class="program-log-bar" id="programLogBar">
+                <span class="panel-collapse" id="programLogToggle">▶</span>
+                <span>Program Log</span>
+                <button class="panel-btn" id="programLogClose" title="Hide program log">✕</button>
+              </div>
+              <pre class="program-log-body" id="programLogBody"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Tooltip + modal -->
+  <div class="tooltip" id="tooltip"></div>
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <span id="modalTitle">Dialog</span>
+        <button class="panel-btn" id="modalClose">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

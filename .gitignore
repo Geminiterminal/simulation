@@ -189,3 +189,6 @@ compile_commands.json
 # Python test artifacts
 __pycache__/
 *.pyc
+
+# Node.js (sysid-tool tests)
+node_modules/
