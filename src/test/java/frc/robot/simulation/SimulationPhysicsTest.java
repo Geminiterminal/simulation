@@ -27,7 +27,10 @@ class SimulationPhysicsTest {
 
   /** Simulate {@code seconds} of a model at constant voltage, return final output velocity (rad/s). */
   private static double simulateSeconds(DCMotorSim sim, double volts, double seconds) {
-    sim.setInputVoltage(volts);
+    // setInput() instead of setInputVoltage(): the latter clamps against
+    // RobotController.getBatteryVoltage(), a native HAL call that segfaults in a
+    // test JVM where the HAL is never initialized. These tests are pure math.
+    sim.setInput(volts);
     int steps = (int) (seconds / DT);
     for (int i = 0; i < steps; i++) {
       sim.update(DT);
@@ -86,7 +89,7 @@ class SimulationPhysicsTest {
     // 50 ms and 2 s for a ~16 kg-per-corner drivetrain.
     double target = 0.63 * twoSecondsVelocity;
     int steps = 0;
-    fresh.setInputVoltage(NOMINAL_VOLTAGE);
+    fresh.setInput(NOMINAL_VOLTAGE);
     while (fresh.getAngularVelocityRadPerSec() < target && steps * DT < 5.0) {
       fresh.update(DT);
       steps++;
@@ -128,7 +131,8 @@ class SimulationPhysicsTest {
         true,
         SimulationConstants.kDeployArmStowedAngleRad);
 
-    arm.setInputVoltage(NOMINAL_VOLTAGE);
+    // setInput() (not setInputVoltage()) for the same HAL-free reason as above.
+    arm.setInput(NOMINAL_VOLTAGE);
     int steps = (int) (3.0 / DT);
     for (int i = 0; i < steps; i++) {
       arm.update(DT);
