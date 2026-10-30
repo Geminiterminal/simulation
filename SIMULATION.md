@@ -262,6 +262,18 @@ in `Constants.VisionConstants`. Sources of each value:
 | Deploy arm length/mass | 0.30 m / 3.0 kg | Estimate — measure the arm |
 | Cameras | 1280×720, 75° diag FOV, 30 fps, 30±5 ms latency | Typical OV9281-class cam; **re-calibrate with PhotonVision cal tool and paste in numbers** |
 
+### CAD / mechanical measurements
+
+The physics constants below are only as good as the measured robot. Two prompt packs turn the robot
+into CAD: [`docs/CAD_MECHANISM_PROMPTS.md`](docs/CAD_MECHANISM_PROMPTS.md) has eight self-contained
+text-to-CAD prompts, one per mechanism, each carrying its own context and the transform that places it
+in the robot (assemble those for a packaging model); [`docs/ROBOT_CAD_PROMPT.md`](docs/ROBOT_CAD_PROMPT.md)
+has the per-part prompts for the pieces that actually get cut. If the robot is not accessible for measurement, [`docs/CAD_REFERENCE_ROBOT.md`](docs/CAD_REFERENCE_ROBOT.md) gives a published reference robot to adapt and a reference value for every otherwise-unmeasurable dimension. The datum drawing
+([`docs/cad/robot-datums.png`](docs/cad/robot-datums.png)), the nominal mechanism layout
+([`docs/cad/robot-parameters.json`](docs/cad/robot-parameters.json)) and the tape-measure sheet
+([`docs/cad/measurements.csv`](docs/cad/measurements.csv)) turn the values in this table from estimates
+into measurements.
+
 ### Re-calibrating
 
 - **Drivetrain / flywheel MOIs**: run

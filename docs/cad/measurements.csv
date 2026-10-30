@@ -1,0 +1,46 @@
+id,subsystem,what_to_measure,unit,code_or_vendor_value,confidence,where_it_comes_from,measured_value,measured_by,date,notes,reference_value,reference_source,reference_confidence
+M01,drivetrain,Overall frame length outer face to outer face,mm,,not in code,,me,,,Compare with the 633.9 minimum implied by the module bodies,633.9 (25.0 in),modules at 21 in wheelbase + 100.5 mm module bodies,derived
+M02,drivetrain,Overall frame width outer face to outer face,mm,,not in code,,me,,,Compare with the 773.6 minimum,773.6 (30.5 in),modules at 26.5 in track + 100.5 mm module bodies,derived
+M03,drivetrain,Frame perimeter (wrap a string, exclude bumpers),mm,,not in code,,me,,R104 limit 2794 (110 in); the module geometry alone implies 2815 before chamfers,2786.9 with 12 mm corner chamfers (109.7 in),geometry above; R104 limit 2794,derived
+M04,drivetrain,Frame tube cross section(s) and wall thickness,mm,,not in code,,me,,,1x2 in MAXTube assumed in prompt 4.1,"2x1 in MAXTube, 1/8 in wall; 1/2x1/2 in cross tubes",REV 2026 Starter Bot drivetrain BOM,high
+M05,drivetrain,Frame height floor to top of top tube,mm,,not in code,,me,,,Master prompt uses 300 as a placeholder,270 to deck; rails 50.8-101.4 and 219.2-270.0,design choice on REV rail construction,low
+M06,drivetrain,Ground clearance under the belly pan,mm,,not in code,,me,,,,20 (belly pan underside),reference packaging,low
+M07,drivetrain,Wheelbase centre to centre (verify),mm,533.4,code,Constants.java:38,,me,,"21 in; already in code, just verify",533.4,already in code; Reference A uses a 20 in rail for 4 modules,code
+M08,drivetrain,Track width centre to centre (verify),mm,673.1,code,Constants.java:36,,me,,"26.5 in; already in code, just verify",673.1,already in code; Reference A cross tube 25 in for a 25 in track,code
+M09,bumpers,Bumper overall length x width x height,mm,,not in code,,me,,,,762.9 x 902.6 x 69.7 tall (frame + 64.5 bumper),R402/R403 + 5 in plywood core from Reference C,medium
+M10,bumpers,Padding depth (robot side to cover),mm,57.15 minimum,rule,2026 manual R402-A,,me,,"Rule floor, measure the real bumper",57.15,R402-A minimum; Reference C uses 3/4 in plywood + pool noodle,high
+M11,bumpers,Bumper vertical band above the floor,mm,69.85 to 139.7,rule,2026 manual R405,,me,,Bumpers must fill that band,69.85 to 139.7,R405,high
+M12,bumpers,Total bumper extension beyond the frame,mm,101.6 maximum,rule,2026 manual R403,,me,,,64.5 used (101.6 max),design choice inside the R403 limit,medium
+M13,shooter,Flywheel diameter (front and back),mm,101.6,estimate,Constants.java:233 comment,,me,,Comment says 4 in wheel; verify both,101.6,our code comment; Reference B runs 4 in Fairlane-class wheels too,medium
+M14,shooter,Flywheel width,mm,,not in code,,me,,Prompt 4.4 assumes 25.4,,25.4,design choice,low
+M15,shooter,Axle centre distance (the one that matters),mm,,not in code,,me,,PITCH = 101.6 + 150.11 - 2 x compression; ~213.6 at 19.05 compression,,213.6 at 19.05 compression,ball 150.11 + flywheel 101.6 - 2 x compression,derived
+M16,shooter,Ball compression between the wheels,mm,,tuning choice,,me,,Sets exit speed; typical 12.7 to 25.4,,12.7 to 19.05 total for an opposed pair,Reference B used 10.4 mm against a hood,medium
+M17,shooter,Side plate outline length x height and thickness,mm,,not in code,,me,,,,300 x 334 x 3.175 plate,derived from axle pitch + 120,derived
+M18,shooter,Muzzle centre relative to robot origin (x y z),mm,,not in code,,me,,Feeds ShooterConstants.kMuzzleOffsetMeters in PR #18,,"x -570, z 300 nominal",our insert transform; MEASURE on the robot,low
+M19,shooter,Ball exit angle above horizontal,deg,,not in code,,me,,,,70 deg above horizontal,Reference B (Big Sky Ri3D 2026 shooter),medium
+M20,shooter,Feeder drum diameter and length,mm,,not in code,,me,,Prompt 4.5 assumes 50.8 x 150,,50.8 x 150,design choice,low
+M21,shooter,Feeder drum centre height above the ball path,mm,,not in code,,me,,,,ball path centre at z 300,our indexer/shooter interface,low
+M22,intake,Deploy pivot position x y z,mm,,not in code,,me,,,,"(280, 0, 280)",design choice consistent with a 300 mm arm and a 50 deg deploy,low
+M23,intake,Pivot to roller centre distance,mm,300,estimate,Constants.java:253,,me,,Sim uses 300 mm and 3 kg for arm inertia,300.0,code: kDeployArmLengthMeters,code
+M24,intake,Intake width (roller length),mm,,not in code,,me,,Prompt 4.7 assumes 500,,468 (18-7/16 in),Reference A intake roller shaft cut length,medium
+M25,intake,Roller diameter,mm,,not in code,,me,,Prompt 4.7 assumes 25.4; code drives it to 5600 rpm,,25.4,design choice; Reference A uses 3 in compliant wheels,low
+M26,intake,Deploy arm mass,kg,3.0,estimate,Constants.java:254,,me,,,3.0,code: kDeployArmMassKg,code
+M27,intake,Stowed and deployed arm angles,deg,0 to 100,code,Constants.java:256-257,,me,,Hard limit 105,0 to 100 (105 max),code,code
+M28,indexer,Conveyor length x width,mm,,not in code,,me,,Prompt 4.8 assumes 420 x 190,,430 x 200,design choice scaled from Reference A conveyor,low
+M29,indexer,Conveyor drum diameter,mm,,not in code,,me,,,,25.4,design choice,low
+M30,indexer,Conveyor floor height above the mat,mm,,not in code,,me,,,,150,our indexer insert,low
+M31,electronics,roboRIO position,mm,,not in code,,me,,,,copy Reference A belly pan layout,Reference A,low
+M32,electronics,PDH position,mm,,not in code,,me,,,,copy Reference A belly pan layout,Reference A,low
+M33,electronics,Radio position,mm,,not in code,,me,,,,copy Reference A belly pan layout,Reference A,low
+M34,electronics,Battery position and orientation,mm,,not in code,,me,,"Standard FRC SLA is ~197 x 77 x 167, ~5.9 kg",,"197 x 77 x 167, 5.9 kg",standard FRC SLA battery,high
+M35,electronics,navX position and orientation,mm,,not in code,,me,,"Must be flat, no yaw offset (kGyroReversed = false)",,"centre, flat, no yaw",code: kGyroReversed = false,code
+M36,vision,Camera A lens centre x y z and yaw and pitch,mm,-311.15 -273.05 434.98 / 180 / 0,code,Constants.java:150-157,,me,,Re-measure after any remount,"-311.15, -273.05, 434.98; yaw 180; pitch 0",code: Constants.VisionConstants,code
+M37,vision,Camera B lens centre x y z and yaw and pitch,mm,-254.00 -330.20 411.23 / -90 / 0,code,Constants.java:163-170,,me,,Faces the robot RIGHT despite the name,"-254.00, -330.20, 411.23; yaw -90; pitch 0",code: Constants.VisionConstants,code
+M38,mass,All-up robot mass without bumpers and battery,kg,65.0 in code,estimate,Constants.java:204,,me,,R103 limit 52.16 kg (115 lb). 65 kg is 8 lb over - weigh it,52 kg used for the model (range 47-57),Reference C: Everybot all-up 46.75 kg,medium
+M39,mass,All-up mass with bumpers,kg,,rule 61.23 max,R408,,me,,,61.23 max (R408),2026 Game Manual R408,high
+M40,mass,Mass of each subassembly (drivetrain shooter intake electronics),kg,,not in code,,me,,,,"drivetrain 7, modules 6.9, bumpers 8, intake 4.5, indexer 3, shooter 6.5, electronics 12",nominal build-up with 2.70 g/cm3 aluminium,low
+M41,mass,CG height above the floor,mm,,not in code,,me,,Balance on a pipe or use CAD mass properties,,"about 200 (design target, low CG)",reference packaging; no published number,low
+M42,mass,CG x y position,mm,,not in code,,me,,,,"about (0, 0) by symmetry of the layout",reference packaging,low
+M43,mass,Yaw moment of inertia (from CAD mass properties),kg m^2,5.7 in code,estimate,Constants.java:205,,me,,Take from CAD once the model is closed,about 5.5 to 6.0 for a 50 kg robot at 760 x 900,scaling the coded 5.7 at 65 kg,low
+M44,cots,COTS part numbers for every vendor component,-,,not in code,,me,,Decides which STEP files to download,,see Reference A BOM + ours,reference BOMs,high
+M45,cots,Which SPARK / Talon holds CAN 9 (the deploy motor),-,SPARK Flex assumed,estimate,Intake.java:122,,me,,Code comment warns it may physically be a SPARK MAX,SPARK Flex per code; verify on the robot,code comment in Intake.java,medium
