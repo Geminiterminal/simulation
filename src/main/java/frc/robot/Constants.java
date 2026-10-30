@@ -170,6 +170,38 @@ public final class Constants {
             Units.degreesToRadians(-90.0)
         ));
 
+    /**
+     * The camera mounted on the shooter (top right, looking out of the back of
+     * the robot alongside the launcher). It is the rear-facing camera above;
+     * the two names are kept separate so the shooter code can be pointed at a
+     * different camera later without touching the fusion pipeline.
+     *
+     * <p>If the shooter camera is ever re-mounted, update
+     * {@link #kRobotToBackCamera} - pose fusion and the aim correction below
+     * both read that one transform.
+     */
+    public static final String kShooterCameraName = kBackCameraName;
+
+    /** Mounting transform of the shooter camera, in the robot frame. */
+    public static final Transform3d kRobotToShooterCamera = kRobotToBackCamera;
+
+    // Aim-correction limits for the shooter camera (ShooterCameraAim).
+    // These are sanity bounds, not tuning: they reject a bad detection instead
+    // of yanking the aim. The frame-age and ambiguity limits are live knobs in
+    // ShooterTuning; these two stay constants because changing them mid-match
+    // would only hide a broken mount.
+    /** Closest tag worth using for aim (m). */
+    public static final double kCameraAimMinRangeMeters = 0.75;
+
+    /** Furthest tag worth using for aim (m); hub tags sit inside this. */
+    public static final double kCameraAimMaxRangeMeters = 7.5;
+
+    /** Largest angular residual applied (deg). Bigger is a broken pose, not aim error. */
+    public static final double kCameraAimMaxCorrectionDeg = 8.0;
+
+    /** Largest radial residual applied (m). */
+    public static final double kCameraAimMaxRangeCorrectionMeters = 0.75;
+
     // Simulated camera characteristics (calibrated to the team's cameras).
     // Re-measure intrinsics with the PhotonVision camera calibration tool and
     // update these numbers if the real calibration deviates.
@@ -183,6 +215,57 @@ public final class Constants {
     public static final double kSimCameraLatencyStdDevMs = 5.0;
     // PhotonVision multi-tag/PNP rarely solves reliably beyond this range.
     public static final double kSimCameraMaxSightRangeMeters = 6.0;
+  }
+
+  /**
+   * Shooter geometry and defaults for the code-only accuracy improvements.
+   *
+   * <p>Every value here is a software setting: no mechanism has to move. The
+   * two entries marked "measure" are one-time tape measurements; leaving them
+   * at zero reproduces the original aim model exactly (aim the robot center,
+   * fire straight out of the rear), so the new math is an opt-in improvement
+   * rather than a behavior change. See SHOOTER_ACCURACY.md.
+   */
+  public static final class ShooterConstants {
+    /**
+     * MEASURE: horizontal offset from the robot center to the point where FUEL
+     * leaves the shooter (the muzzle), robot frame (+x forward, +y left).
+     *
+     * <p>This matters most for close shots: a 0.3 m lateral offset changes the
+     * required heading by ~11 degrees from 1.5 m away. A rough tape measure is
+     * already much better than zero.
+     */
+    public static final Translation2d kMuzzleOffsetMeters = new Translation2d(0.0, 0.0);
+
+    /** Robot-frame direction the shooter fires in, degrees (180 = straight out of the rear). */
+    public static final double kShooterFacingOffsetDegrees = 180.0;
+
+    /** Back/front flywheel speed ratio that preserves the tuned backspin. */
+    public static final double kDefaultSpinRatio = 2000.0 / 1500.0;
+
+    /** Fixed flywheel speeds used while the distance table is disabled. */
+    public static final double kDefaultFrontRpm = 1500.0;
+    public static final double kDefaultBackRpm = 2000.0;
+
+    /** Number of editable distance-to-RPM points published to the dashboard. */
+    public static final int kTablePoints = 5;
+
+    /**
+     * Default distance table. Every point holds the current fixed speed, so
+     * turning the table on before calibrating does not change the shot. Replace
+     * the points with measured values (SHOOTER_ACCURACY.md, "Calibrating the
+     * distance table").
+     *
+     * <p>Distances must be entered in ascending order or the shooter falls back
+     * to the fixed speed and reports "Table Valid = false".
+     */
+    public static final double[] kDefaultTableDistancesMeters = {1.0, 2.0, 3.0, 4.0, 5.0};
+    public static final double[] kDefaultTableFrontRpm = {
+      1500.0, 1500.0, 1500.0, 1500.0, 1500.0
+    };
+
+    /** Time of flight assumed when converting table slope into a motion-comp gain. */
+    public static final double kNominalTimeOfFlightSeconds = 0.5;
   }
 
   /**

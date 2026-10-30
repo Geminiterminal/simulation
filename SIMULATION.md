@@ -323,6 +323,20 @@ Python mirror's constants still match `VisionFusion.java`.
   can differ).
 - **Back shooter wheel never reaches speed**: apply the back-motor inversion
   in the sim by feeding `-m_backPhysics.getAngularVelocityRPM()`.
+- **Sim robot aims and ranges but never feeds**: the shooter gates the feeder
+  on the *measured* chassis motion, flywheel speed, heading and distance. Read
+  `Shooter/Feed Status` on the dashboard - it says exactly which condition is
+  holding the shot (`SPINNING UP`, `AIMING`, `RANGING`, `MOVING`, `FEEDING`,
+  `OFF`). In simulation the drive modules coast because `SparkMaxSim` does not
+  model brake mode, so `MOVING` can persist for a couple of seconds after the
+  ranging drive; the real robot (brake mode on all four modules) stops in
+  roughly 0.3 s. Full explanation and tuning steps: `SHOOTER_ACCURACY.md`.
+- **Shooter camera aim reads `NO FRAME` in sim**: the simulated rear camera only
+  produces results while a hub tag is inside its field of view. Aim the
+  simulated robot at the hub and watch `Vision/ShooterCam Status`; a healthy
+  frame reads `OK` with an aim error near zero. If the simulated robot is
+  spawned facing away from the hub, rotate it first - this is the same condition
+  the real camera will see, and it is why the feature is off by default.
 - **Arm hangs instead of stowing**: expected — with no command the MAXMotion
   loop is idle and gravity wins, same as hardware in brake-less conditions.
   Schedule a stow on robot boot if you want it held.
