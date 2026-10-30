@@ -54,9 +54,31 @@ class SwerveSimulationUnitsTest(unittest.TestCase):
             "m_turningSparkSim.iterate(moduleTurnRateRadPerSec, busVoltage, dtSeconds);",
             MODULE_SOURCE,
         )
-        self.assertIn(
-            "m_turningEncoderSim.iterate(moduleTurnRateRadPerSec, dtSeconds);",
+
+    def test_steer_absolute_encoder_state_is_written_from_the_plant_not_re_integrated(self):
+        """REVLib's SparkSim.iterate() already mirrors position AND velocity into the selected
+        feedback sensor (the absolute encoder, for the turning SPARK), while
+        SparkAbsoluteEncoderSim.iterate() only integrates position and never publishes velocity.
+        Re-integrating on top of the mirror made the reported azimuth lead the plant by a full
+        loop and left the SysId velocity trace dependent on REVLib's internal mirroring, so the
+        encoder state is now written straight from the steer plant."""
+        omega_rad_s = 12.6  # module rate near the top of a 6 V azimuth SysId step
+        dt = 0.020
+
+        # One loop of double-integrated lead is more than 10 deg of reported module angle that
+        # the physics plant never actually reached.
+        self.assertGreater(math.degrees(omega_rad_s * dt), 10.0)
+
+        self.assertNotIn("m_turningEncoderSim.iterate(", MODULE_SOURCE)
+        self.assertIn("m_turningEncoderSim.setPosition(", MODULE_SOURCE)
+        self.assertIn("m_turningEncoderSim.setVelocity(moduleTurnRateRadPerSec);", MODULE_SOURCE)
+        # Through Bore encoder reports a wrapped absolute angle, like the real hardware.
+        self.assertRegex(
             MODULE_SOURCE,
+            re.compile(
+                r"MathUtil\.inputModulus\(\s*m_turnPhysicsSim\.getAngularPositionRad\(\),"
+                r"\s*0\.0,\s*2\.0 \* Math\.PI\)"
+            ),
         )
 
     def test_revlib_2026_velocity_feedforward_uses_12v_kv_for_neo_drive_and_shooter(self):
