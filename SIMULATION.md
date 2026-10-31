@@ -267,7 +267,10 @@ in `Constants.VisionConstants`. Sources of each value:
 - **Drivetrain / flywheel MOIs**: run
   [SysId](https://docs.wpilib.org/en/stable/docs/software/advanced-controls/system-identification/index.html)
   routines on the real robot, then plug identified kV/kA into the inertia
-  estimates (J ≈ kA relation in `LinearSystemId`).
+  estimates (J ≈ kA relation in `LinearSystemId`). The routines are already
+  wired up (`SysIdSupport`, `SysId: ...` Auto-Chooser entries), and the data
+  log they produce is turned into gains by `tools/sysid_wpilog.py` — see
+  [Analysing real SysId logs](#analysing-real-sysid-logs) below.
 - **Wheel radius**: measure actual odometry distance over a known tape
   distance; adjust `ModuleConstants.kWheelDiameterMeters` (robot constant, it
   feeds both sim and real).
@@ -276,6 +279,52 @@ in `Constants.VisionConstants`. Sources of each value:
   `motorRotations × 360 / degreesMoved`. Update `kDeployArmGearRatio`.
 - **Cameras**: calibrate intrinsics in PhotonVision, then copy resolution, FOV,
   calib error, FPS and latency into `VisionConstants`.
+
+## Analysing real SysId logs
+
+`SysIdSupport` runs the WPILib four-part characterization (quasistatic and
+dynamic, forward and reverse) for the drivetrain linear/angular/steer, both
+shooter flywheels, the feeder, the deploy arm, the intake roller and the
+conveyor. Each run writes a normal WPILib data log
+(`/home/lvuser/logs/FRC_....wpilog` on the robot, `logs/` in simulation).
+
+That log is all a laptop needs — `tools/sysid_wpilog.py` reads it with no
+GUI, no SysId install and no numpy:
+
+```bash
+python3 tools/sysid_wpilog.py info logs/FRC_20260418_152525.wpilog   # what is in it
+python3 tools/sysid_wpilog.py fit  logs/FRC_20260418_152525.wpilog   # kS, kV, kA per mechanism
+python3 tools/sysid_wpilog.py fit  logs/FRC_20260418_152525.wpilog \
+    --mechanism shooter-flywheels --java          # paste-ready constants
+```
+
+It splits the log on the `sysid-test-state-<mechanism>` entry, resamples each
+motor's `voltage-*` / `linear-velocity-*` (or `angular-velocity-*`) channels onto
+the control loop, and fits:
+
+| Fit | Model | Role |
+|-----|-------|------|
+| ZOH (recommended) | `v[k+1] = ad·v[k] + bd·V[k] + cd·sgn(v[k])`, mapped back with `ln(ad)/Δt` | Exact 20 ms model; immune to finite-difference acceleration noise |
+| simple | `V = kS·sgn(v) + kV·v + kA·a` | What the WPILib SysId GUI reports, for comparison |
+| quasistatic-only | `V = kS·sgn(v) + kV·v` | Independent `kV` sanity check |
+
+The report also prints the free-speed expectation (`12 V / free speed` in the
+logged unit) so a `kV` that is off by an order of magnitude — usually a wrong
+velocity unit — is obvious, plus per-motor `kV` spread, saturation percentage,
+`R²`/RMSE and warnings (missing test legs, truncated ramps, noisy encoders,
+load imbalance).
+
+Gains come out **in the units of the log** (`m/s`, `RPM`, `rot/s`, `deg/s` — the
+report names them), which is exactly what `Configs.java`,
+`closedLoop.feedForward.kV(...)` and Phoenix `Slot0` expect. To turn a `kA` into
+a simulated MOI, use the `J ≈ kA` relation of `LinearSystemId` and compare
+against the estimates in the table above; a large mismatch is the signal that
+a `SimulationConstants` MOI is wrong.
+
+`python3 tools/sysid_wpilog.py demo /tmp/synthetic.wpilog` synthesizes a
+known-gain log (0.18 V / 2.69 V·s/m / 0.55 V·s²/m) so the whole pipeline can be
+exercised without a robot; the tests in `tests/test_sysid_wpilog.py` do exactly
+that, and also pin the `.wpilog` binary reader/writer (`tools/wpilog.py`).
 
 ## Unit tests
 
@@ -299,6 +348,14 @@ The same heading scenarios are also mirrored in pure Python
 regression ("the authored start rotation is authoritative"). Run them without
 WPILib via `python3 -m unittest discover -s tests`; they also check that the
 Python mirror's constants still match `VisionFusion.java`.
+
+`tests/test_sysid_wpilog.py` covers the WPILib `.wpilog` reader/writer
+(`tools/wpilog.py`) and the SysId gain identification (`tools/sysid_wpilog.py`):
+the binary layout (including a hand-assembled log, truncation, gzip and Git-LFS
+pointers), both the 2024+ `voltage-<motor>-<mechanism>` and legacy
+`sysid/<motor>/voltage` naming, four-part segmentation, gain recovery within a
+few percent of a synthetic ground-truth plant, unit handling (`RPM` vs `rot/s`),
+and every report/exit-code path.
 
 ## Known limitations (and upgrade path)
 
